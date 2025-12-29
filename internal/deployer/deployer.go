@@ -80,6 +80,7 @@ func RunDeploy(opts Options) error {
 		LocalDir:      opts.LocalDir,
 		BinaryPath:    "/usr/local/bin/autonfs",
 		IdleTimeout:   opts.IdleTimeout,
+		WakeTimeout:   "120s", // Default safe timeout for WoL boot
 		LoadThreshold: opts.LoadThreshold,
 		WatcherDryRun: opts.WatcherDryRun,
 	}

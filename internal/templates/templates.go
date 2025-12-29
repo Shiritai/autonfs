@@ -64,6 +64,7 @@ type Config struct {
 	LocalDir      string
 	BinaryPath    string // /usr/local/bin/autonfs
 	IdleTimeout   string // e.g., "30m"
+	WakeTimeout   string // e.g., "120s"
 	LoadThreshold string // e.g., "0.5"
 	WatcherDryRun bool   // 是否開啟 Watcher 的 DryRun 模式
 }
