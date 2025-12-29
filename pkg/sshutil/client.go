@@ -12,6 +12,7 @@ import (
 	"github.com/kevinburke/ssh_config"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/term"
 )
 
 // Client 封裝 SSH 連線資訊
@@ -21,10 +22,13 @@ type Client struct {
 	Port  string
 	User  string
 	Key   string
+	
+	conn *ssh.Client // Persistent connection
 }
 
 // NewClient 從 ~/.ssh/config 解析並回傳 Client 物件
 func NewClient(alias string) (*Client, error) {
+	// ... (Parsing logic same as before) ...
 	// 載入預設配置
 	f, err := os.Open(filepath.Join(os.Getenv("HOME"), ".ssh", "config"))
 	if err != nil {
@@ -39,13 +43,12 @@ func NewClient(alias string) (*Client, error) {
 
 	host, _ := cfg.Get(alias, "HostName")
 	if host == "" {
-		// 如果沒有 HostName，可能使用者直接輸入了 IP 或 Alias 就是 HostName
 		host = alias
 	}
 
 	user, _ := cfg.Get(alias, "User")
 	if user == "" {
-		user = os.Getenv("USER") // 預設使用當前使用者
+		user = os.Getenv("USER")
 	}
 
 	port, _ := cfg.Get(alias, "Port")
@@ -54,8 +57,6 @@ func NewClient(alias string) (*Client, error) {
 	}
 
 	key, _ := cfg.Get(alias, "IdentityFile")
-	// ssh_config 預設回傳 "~/.ssh/id_rsa"，如果找不到則回傳空字串或預設值
-	// 我們這裡先保留路徑處理邏輯
 
 	return &Client{
 		Alias: alias,
@@ -66,8 +67,12 @@ func NewClient(alias string) (*Client, error) {
 	}, nil
 }
 
-// RunCommand 建立連線並執行單一指令
-func (c *Client) RunCommand(cmd string) (string, error) {
+// Connect 建立 SSH 連線
+func (c *Client) Connect() error {
+	if c.conn != nil {
+		return nil // Already connected
+	}
+
 	authMethods := []ssh.AuthMethod{}
 
 	// 1. 嘗試 SSH Agent
@@ -84,27 +89,20 @@ func (c *Client) RunCommand(cmd string) (string, error) {
 
 	// 2. 嘗試 IdentityFile (Private Key)
 	keyFiles := []string{}
-
-	// 添加 Config 指定的 Key
 	if c.Key != "" && c.Key != "~/.ssh/identity" { 
 		keyFiles = append(keyFiles, expandPath(c.Key))
 	}
-
-	// 添加預設 Keys (Fallback)
 	defaultKeys := []string{
 		filepath.Join(os.Getenv("HOME"), ".ssh", "id_rsa"),
 		filepath.Join(os.Getenv("HOME"), ".ssh", "id_ed25519"),
 		filepath.Join(os.Getenv("HOME"), ".ssh", "id_ecdsa"),
 	}
-	
-	// 如果沒有指定 Key，或是為了最大相容性，我們嘗試載入存在的預設 Key
 	for _, dk := range defaultKeys {
 		if _, err := os.Stat(dk); err == nil {
 			keyFiles = append(keyFiles, dk)
 		}
 	}
 
-	// 載入所有找到的 Private Keys
 	for _, kPath := range keyFiles {
 		key, err := ioutil.ReadFile(kPath)
 		if err == nil {
@@ -115,36 +113,106 @@ func (c *Client) RunCommand(cmd string) (string, error) {
 		}
 	}
 
-	// SSH Client Config
 	config := &ssh.ClientConfig{
 		User:            c.User,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // Phase 1: 暫時忽略 Host Key 檢查 (TODO: Fix this for security)
-		Timeout:         5 * time.Second,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         30 * time.Second,
 	}
 
-	// 連線
 	addr := fmt.Sprintf("%s:%s", c.Host, c.Port)
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
-		return "", fmt.Errorf("SSH 連線失敗 [%s]: %v", addr, err)
+		return fmt.Errorf("SSH 連線失敗 [%s]: %v", addr, err)
 	}
-	defer client.Close()
+	
+	c.conn = client
+	return nil
+}
 
-	// 建立 Session
-	session, err := client.NewSession()
+// Close 關閉連線
+func (c *Client) Close() error {
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+// RunCommand 執行單一指令 (非互動式，回傳 Output)
+func (c *Client) RunCommand(cmd string) (string, error) {
+	if c.conn == nil {
+		if err := c.Connect(); err != nil {
+			return "", err
+		}
+	}
+
+	session, err := c.conn.NewSession()
 	if err != nil {
 		return "", fmt.Errorf("無法建立 Session: %v", err)
 	}
 	defer session.Close()
 
-	// 執行指令
 	output, err := session.CombinedOutput(cmd)
 	if err != nil {
 		return string(output), fmt.Errorf("執行指令失敗: %v\nOutput: %s", err, string(output))
 	}
 
 	return strings.TrimSpace(string(output)), nil
+}
+
+
+// RunTerminal 執行指令並分配 PTY (互動式，支援 sudo 密碼輸入)
+// 輸出直接導向 os.Stdout/Stderr，並將本機終端機設為 Raw Mode
+func (c *Client) RunTerminal(cmd string) error {
+	if c.conn == nil {
+		if err := c.Connect(); err != nil {
+			return err
+		}
+	}
+
+	session, err := c.conn.NewSession()
+	if err != nil {
+		return fmt.Errorf("無法建立 Session: %v", err)
+	}
+	defer session.Close()
+
+	// 請求 PTY
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,     // Default to echo
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
+	}
+	
+	// 獲取視窗大小 (若可行)
+	fd := int(os.Stdin.Fd())
+	w, h, err := term.GetSize(fd)
+	if err != nil {
+		w, h = 80, 40
+	}
+
+	if err := session.RequestPty("xterm", h, w, modes); err != nil {
+		return fmt.Errorf("請求 PTY 失敗: %v", err)
+	}
+
+	// 串接標準輸入輸出
+	session.Stdin = os.Stdin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+
+	// 設為 Raw Mode (關鍵：這讓遠端 sudo 能控制 echo，且能正確接收按鍵)
+	if term.IsTerminal(fd) {
+		oldState, err := term.MakeRaw(fd)
+		if err != nil {
+			return fmt.Errorf("無法設定 Raw Terminal: %v", err)
+		}
+		defer term.Restore(fd, oldState)
+	}
+
+	if err := session.Run(cmd); err != nil {
+		// 在 Raw mode 下錯誤訊息可能顯示異常，但在 restore 後應正常
+		return fmt.Errorf("指令執行失敗: %v", err)
+	}
+	return nil
 }
 
 func expandPath(path string) string {
