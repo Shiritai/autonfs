@@ -5,8 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io/ioutil"
-	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,9 +15,9 @@ import (
 // Monitor 負責系統狀態監控
 type Monitor struct {
 	ProcLoadAvg  string
-	ProcNetTCP   string
-	ProcNetTCP6  string
-	ShutdownFunc func() error // 用於 Mock 關機行為
+	ProcRPC      string
+	ProcNFSv4    string // /proc/fs/nfsd/clients/
+	ShutdownFunc func() error
 }
 
 // WatchConfig 監控配置
@@ -28,67 +28,116 @@ type WatchConfig struct {
 	DryRun        bool
 }
 
-// NewMonitor 建立監控器，使用預設路徑
+// NewMonitor 建立監控器
 func NewMonitor() *Monitor {
 	return &Monitor{
 		ProcLoadAvg: "/proc/loadavg",
-		ProcNetTCP:  "/proc/net/tcp",
-		ProcNetTCP6: "/proc/net/tcp6",
-		ShutdownFunc: func() error { // 預設實作：呼叫 systemctl
+		ProcRPC:     "/proc/net/rpc/nfsd",
+		ProcNFSv4:   "/proc/fs/nfsd/clients",
+		ShutdownFunc: func() error {
 			cmd := exec.Command("systemctl", "poweroff")
 			return cmd.Run()
 		},
 	}
 }
 
-// Watch 啟動監控迴圈
-// 這是一個 Blocking call，直到 context 被取消
+// Watch 啟動監控迴圈 (Blocking)
 func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 	interval := cfg.PollInterval
 	if interval == 0 {
 		interval = 10 * time.Second
 	}
 
-	fmt.Printf("啟動監控 (Idle: %v, Load < %.2f, Interval: %v)\n", cfg.IdleTimeout, cfg.LoadThreshold, interval)
-	
+	fmt.Printf("=== AutoNFS Watcher Started ===\n")
+	fmt.Printf("Config: Idle=%v, Load<%.2f, Interval=%v, DryRun=%v\n",
+		cfg.IdleTimeout, cfg.LoadThreshold, interval, cfg.DryRun)
+
 	idleStart := time.Now()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	var lastOps uint64 = 0
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			// 1. 檢查 NFS 連線
-			hasConn, err := m.checkNFSConnection()
+			// --- Data Collection Phase ---
+
+			// 1. Get Load
+			isLowLoad, loadVal, err := m.checkLoad(cfg.LoadThreshold)
 			if err != nil {
-				fmt.Printf("檢查連線錯誤: %v\n", err)
-				continue
+				fmt.Printf("[Error] Read Load: %v\n", err)
 			}
 
-			// 2. 檢查 Load
-			lowLoad, loadVal, _ := m.checkLoad(cfg.LoadThreshold)
+			// 2. Get NFSv4 Clients
+			clients, err := m.getNFSv4Clients()
+			if err != nil {
+				// Normal behavior if not mounted or NFSv4 not active
+			}
 
-			if hasConn {
-				fmt.Printf("[Active] 發現 NFS 連線 (Load: %.2f)\n", loadVal)
-				idleStart = time.Now()
-			} else if !lowLoad {
-				fmt.Printf("[Busy] 系統負載過高 (Load: %.2f)\n", loadVal)
-				idleStart = time.Now()
+			// 3. Get NFS Ops Delta
+			currOps, err := m.getNFSProcCount()
+			var opsDelta uint64 = 0
+			if err == nil {
+				if lastOps > 0 {
+					opsDelta = currOps - lastOps
+				}
+				lastOps = currOps
 			} else {
-				idleDuration := time.Since(idleStart)
-				fmt.Printf("[Idle] 已閒置 %v (Load: %.2f)\n", idleDuration, loadVal)
+				// Only log critical RPC read errors
+				fmt.Printf("[Warn] Read RPC: %v\n", err)
+			}
 
-				if idleDuration > cfg.IdleTimeout {
-					fmt.Println("達到閒置閾值，準備關機...")
+			// --- Decision Phase ---
+
+			// Reasons to be Active:
+			// 1. High Load -> Busy
+			// 2. Connected NFSv4 Clients -> Mounted (Strongest Active Signal)
+			// 3. High Ops Delta -> Data Transfer (Fallback)
+
+			isActive := false
+			activeReason := ""
+
+			if !isLowLoad {
+				isActive = true
+				activeReason = fmt.Sprintf("High Load (%.2f)", loadVal)
+			} else if len(clients) > 0 {
+				isActive = true
+				clientList := strings.Join(clients, ", ")
+				activeReason = fmt.Sprintf("Client Connected (%s)", clientList)
+			} else if opsDelta > 0 {
+				isActive = true
+				activeReason = fmt.Sprintf("NFS Activity (Delta %d)", opsDelta)
+			}
+
+			// --- Logging & Action Phase ---
+
+			now := time.Now().Format("15:04:05")
+
+			if isActive {
+				idleStart = time.Now()
+				fmt.Printf("%s [ACTIVE] %s | Load: %.2f | Ops: %d\n", now, activeReason, loadVal, opsDelta)
+			} else {
+				idleDur := time.Since(idleStart).Truncate(time.Second)
+				timeLeft := cfg.IdleTimeout - idleDur
+				if timeLeft < 0 {
+					timeLeft = 0
+				}
+
+				fmt.Printf("%s [IDLE]   Dataset: 0 clients, %d ops | Load: %.2f | Idle: %v (Shutdown in %v)\n",
+					now, opsDelta, loadVal, idleDur, timeLeft)
+
+				if idleDur > cfg.IdleTimeout {
+					fmt.Printf("%s [SHUTDOWN] Idle threshold reached.\n", now)
 					if !cfg.DryRun {
 						if err := m.ShutdownFunc(); err != nil {
-							fmt.Printf("關機失敗: %v\n", err)
+							fmt.Printf("[Error] Shutdown failed: %v\n", err)
 						}
 					} else {
-						fmt.Println("[Dry Run] 模擬關機指令已發送")
-						idleStart = time.Now() // 重置以利持續觀察
+						fmt.Printf("%s [DRY-RUN] Simulated poweroff command.\n", now)
+						idleStart = time.Now() // Reset to avoid log flooding
 					}
 				}
 			}
@@ -96,6 +145,7 @@ func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 	}
 }
 
+// checkLoad checks system load
 func (m *Monitor) checkLoad(threshold float64) (bool, float64, error) {
 	data, err := ioutil.ReadFile(m.ProcLoadAvg)
 	if err != nil {
@@ -103,7 +153,7 @@ func (m *Monitor) checkLoad(threshold float64) (bool, float64, error) {
 	}
 	parts := strings.Fields(string(data))
 	if len(parts) < 1 {
-		return false, 0, fmt.Errorf("無法解析 loadavg")
+		return false, 0, fmt.Errorf("invalid loadavg")
 	}
 	load, err := strconv.ParseFloat(parts[0], 64)
 	if err != nil {
@@ -112,34 +162,69 @@ func (m *Monitor) checkLoad(threshold float64) (bool, float64, error) {
 	return load < threshold, load, nil
 }
 
-func (m *Monitor) checkNFSConnection() (bool, error) {
-	files := []string{m.ProcNetTCP, m.ProcNetTCP6}
-	
-	for _, file := range files {
-		f, err := os.Open(file)
+// getNFSv4Clients returns list of IP addresses of connected v4 clients
+func (m *Monitor) getNFSv4Clients() ([]string, error) {
+	files, err := ioutil.ReadDir(m.ProcNFSv4)
+	if err != nil {
+		return nil, err
+	}
+
+	var clientIPs []string
+	for _, f := range files {
+		if !f.IsDir() {
+			continue
+		}
+
+		infoPath := filepath.Join(m.ProcNFSv4, f.Name(), "info")
+		content, err := ioutil.ReadFile(infoPath)
 		if err != nil {
 			continue
 		}
-		defer f.Close()
 
-		scanner := bufio.NewScanner(f)
-		scanner.Scan()
-		for scanner.Scan() {
-			fields := strings.Fields(scanner.Text())
-			if len(fields) < 4 {
-				continue
-			}
-			// local_address: IP:Port (in Hex)
-			localAddr := fields[1]
-			state := fields[3]
-
-			// Check Port 2049 (Hex: 0801) & ESTABLISHED (01)
-			if strings.HasSuffix(localAddr, ":0801") && state == "01" {
-				return true, nil
+		lines := strings.Split(string(content), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "address:") {
+				// address: "192.168.1.x:port"
+				parts := strings.Split(line, "\"")
+				if len(parts) >= 2 {
+					ipPort := parts[1]
+					if host, _, err := strings.Cut(ipPort, ":"); host != "" && err {
+						clientIPs = append(clientIPs, host)
+					} else {
+						clientIPs = append(clientIPs, ipPort)
+					}
+				}
 			}
 		}
 	}
-	return false, nil
+	return clientIPs, nil
+}
+
+// getNFSProcCount reads total operations from /proc/net/rpc/nfsd
+func (m *Monitor) getNFSProcCount() (uint64, error) {
+	data, err := ioutil.ReadFile(m.ProcRPC)
+	if err != nil {
+		return 0, err
+	}
+
+	var totalOps uint64 = 0
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		header := fields[0]
+		if header == "proc3" || header == "proc4" {
+			if cnt, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
+				totalOps += cnt
+			}
+		}
+	}
+	return totalOps, nil
 }
 
 func (m *Monitor) shutdown() error {
