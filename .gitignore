@@ -2,5 +2,6 @@
 !.gitignore
 
 autonfs
+autonfs.yaml
 main
 tmp

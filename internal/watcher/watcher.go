@@ -120,16 +120,22 @@ func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 				idleStart = time.Now()
 				fmt.Printf("%s [ACTIVE] %s | Load: %.2f | Ops: %d\n", now, activeReason, loadVal, opsDelta)
 			} else {
-				idleDur := time.Since(idleStart).Truncate(time.Second)
-				timeLeft := cfg.IdleTimeout - idleDur
+				rawIdleDur := time.Since(idleStart)
+				displayIdleDur := rawIdleDur.Truncate(time.Second)
+				timeLeft := cfg.IdleTimeout - rawIdleDur
 				if timeLeft < 0 {
 					timeLeft = 0
 				}
+				// Round timeLeft for nicer display
+				displayTimeLeft := timeLeft.Round(time.Second)
+				if timeLeft < time.Second {
+					displayTimeLeft = timeLeft // Show ms if < 1s
+				}
 
 				fmt.Printf("%s [IDLE]   Dataset: 0 clients, %d ops | Load: %.2f | Idle: %v (Shutdown in %v)\n",
-					now, opsDelta, loadVal, idleDur, timeLeft)
+					now, opsDelta, loadVal, displayIdleDur, displayTimeLeft)
 
-				if idleDur > cfg.IdleTimeout {
+				if rawIdleDur > cfg.IdleTimeout {
 					fmt.Printf("%s [SHUTDOWN] Idle threshold reached.\n", now)
 					if !cfg.DryRun {
 						if err := m.ShutdownFunc(); err != nil {
@@ -219,8 +225,11 @@ func (m *Monitor) getNFSProcCount() (uint64, error) {
 
 		header := fields[0]
 		if header == "proc3" || header == "proc4" {
-			if cnt, err := strconv.ParseUint(fields[1], 10, 64); err == nil {
-				totalOps += cnt
+			// fields[1] is the number of fields, counters start at fields[2]
+			for i := 2; i < len(fields); i++ {
+				if cnt, err := strconv.ParseUint(fields[i], 10, 64); err == nil {
+					totalOps += cnt
+				}
 			}
 		}
 	}

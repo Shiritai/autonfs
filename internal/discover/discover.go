@@ -1,7 +1,6 @@
 package discover
 
 import (
-	"autonfs/pkg/sshutil"
 	"fmt"
 	"strings"
 )
@@ -16,8 +15,13 @@ type ServerInfo struct {
 	MAC       string
 }
 
+// SSHClient abstract the required SSH operations for discovery
+type SSHClient interface {
+	RunCommand(cmd string) (string, error)
+}
+
 // Probe 執行遠端偵測並回傳資訊
-func Probe(client *sshutil.Client) (*ServerInfo, error) {
+func Probe(client SSHClient) (*ServerInfo, error) {
 	info := &ServerInfo{}
 
 	// 1. 取得 Hostname
@@ -47,7 +51,7 @@ func Probe(client *sshutil.Client) (*ServerInfo, error) {
 	mac=$(cat /sys/class/net/$iface/address);
 	echo "$iface|$ip|$mac"
 	`
-	
+
 	netOut, err := client.RunCommand(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("網路探索失敗: %v", err)

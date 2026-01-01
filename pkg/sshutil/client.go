@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -22,7 +23,7 @@ type Client struct {
 	Port  string
 	User  string
 	Key   string
-	
+
 	conn *ssh.Client // Persistent connection
 }
 
@@ -89,7 +90,7 @@ func (c *Client) Connect() error {
 
 	// 2. 嘗試 IdentityFile (Private Key)
 	keyFiles := []string{}
-	if c.Key != "" && c.Key != "~/.ssh/identity" { 
+	if c.Key != "" && c.Key != "~/.ssh/identity" {
 		keyFiles = append(keyFiles, expandPath(c.Key))
 	}
 	defaultKeys := []string{
@@ -125,7 +126,7 @@ func (c *Client) Connect() error {
 	if err != nil {
 		return fmt.Errorf("SSH 連線失敗 [%s]: %v", addr, err)
 	}
-	
+
 	c.conn = client
 	return nil
 }
@@ -160,7 +161,6 @@ func (c *Client) RunCommand(cmd string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
-
 // RunTerminal 執行指令並分配 PTY (互動式，支援 sudo 密碼輸入)
 // 輸出直接導向 os.Stdout/Stderr，並將本機終端機設為 Raw Mode
 func (c *Client) RunTerminal(cmd string) error {
@@ -178,11 +178,11 @@ func (c *Client) RunTerminal(cmd string) error {
 
 	// 請求 PTY
 	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,     // Default to echo
+		ssh.ECHO:          1, // Default to echo
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
-	
+
 	// 獲取視窗大小 (若可行)
 	fd := int(os.Stdin.Fd())
 	w, h, err := term.GetSize(fd)
@@ -211,6 +211,17 @@ func (c *Client) RunTerminal(cmd string) error {
 	if err := session.Run(cmd); err != nil {
 		// 在 Raw mode 下錯誤訊息可能顯示異常，但在 restore 後應正常
 		return fmt.Errorf("指令執行失敗: %v", err)
+	}
+	return nil
+}
+
+// Scp uploads a local file to remote destination using scp command
+func (c *Client) Scp(localPath, remotePath string) error {
+	// Note: using exec scp depends on system binary.
+	// Future improvement: implement pure-go scp or sftp to remove external dependency.
+	cmd := exec.Command("scp", localPath, fmt.Sprintf("%s:%s", c.Alias, remotePath))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("SCP failed: %v, Output: %s", err, string(output))
 	}
 	return nil
 }
