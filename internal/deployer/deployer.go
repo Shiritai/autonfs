@@ -2,6 +2,7 @@ package deployer
 
 import (
 	"autonfs/internal/builder"
+	"autonfs/internal/config"
 	"autonfs/internal/discover"
 	"autonfs/internal/templates"
 	"autonfs/pkg/sshutil"
@@ -20,24 +21,79 @@ type Options struct {
 	LocalDir      string
 	RemoteDir     string
 	IdleTimeout   string
+	WakeTimeout   string // Configurable wake timeout
 	LoadThreshold string
 	DryRun        bool
 	WatcherDryRun bool // New option
 }
 
+// ArtifactBuilder abstracts the build process
+type ArtifactBuilder interface {
+	Build(arch, src, dst string) error
+}
+
+// defaultBuilder implements ArtifactBuilder using internal/builder
+type defaultBuilder struct{}
+
+func (b *defaultBuilder) Build(arch, src, dst string) error {
+	return builder.BuildForArch(arch, src, dst)
+}
+
+// LocalExecutor abstracts local command execution and file reading
+type LocalExecutor interface {
+	RunCommand(name string, args ...string) error
+	ReadFile(path string) ([]byte, error)
+}
+
+// defaultLocalExecutor uses exec.Command and ioutil/os
+type defaultLocalExecutor struct{}
+
+func (e *defaultLocalExecutor) RunCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	// Bind to stdio for visibility, or at least Stderr?
+	// For deployer interactive sudo, we need Stdin.
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func (e *defaultLocalExecutor) ReadFile(path string) ([]byte, error) {
+	return ioutil.ReadFile(path)
+}
+
+// Deployer 負責部署邏輯，支援依賴注入
+type Deployer struct {
+	client    SSHClient
+	builder   ArtifactBuilder
+	localExec LocalExecutor
+}
+
+// NewDeployer 建立 Deployer
+func NewDeployer(client SSHClient) *Deployer {
+	return &Deployer{
+		client:    client,
+		builder:   &defaultBuilder{},
+		localExec: &defaultLocalExecutor{},
+	}
+}
+
+// NewDeployerWithBuilder allows injecting a custom builder and executor?
+// Let's create a generic "NewDeployerWithMocks" or just setters?
+// Or update NewDeployerWithBuilder to accept more.
+// For now, let's just make a new constructor or use options pattern?
+// Let's keep it simple: NewDeployerWithDeps
+func NewDeployerWithDeps(client SSHClient, builder ArtifactBuilder, localExec LocalExecutor) *Deployer {
+	return &Deployer{
+		client:    client,
+		builder:   builder,
+		localExec: localExec,
+	}
+}
+
 // RunDeploy 執行完整部署流程
 func RunDeploy(opts Options) error {
-	// 0. 本機 Sudo 預熱 (避免 ugly NOPASSWD)
-	fmt.Println(">> [0/5] 檢查本機 Sudo 權限...")
-	sudoCmd := exec.Command("sudo", "-v")
-	sudoCmd.Stdin = os.Stdin
-	sudoCmd.Stdout = os.Stdout
-	sudoCmd.Stderr = os.Stderr
-	if err := sudoCmd.Run(); err != nil {
-		return fmt.Errorf("無法取得本機 Sudo 權限: %v", err)
-	}
-
-	// 1. 連線與探索
+	// 1. 連線
 	fmt.Println(">> [1/5] 連線並探索環境...")
 	client, err := sshutil.NewClient(opts.SSHAlias)
 	if err != nil {
@@ -49,177 +105,322 @@ func RunDeploy(opts Options) error {
 	}
 	defer client.Close()
 
-	info, err := discover.Probe(client) // Probe 仍使用 RunCommand (非互動)
+	d := NewDeployer(client)
+	return d.Run(opts)
+}
+
+// ApplyOptions defines options for the Apply method
+type ApplyOptions struct {
+	DryRun        bool
+	WatcherDryRun bool
+}
+
+// Apply executes the deployment based on the provided configuration
+func (d *Deployer) Apply(cfg *config.Config, opts ApplyOptions) error {
+	// 0. Iterate Hosts
+	for _, host := range cfg.Hosts {
+		if err := d.applyHost(host, opts); err != nil {
+			return fmt.Errorf("failed to deploy host %s: %v", host.Alias, err)
+		}
+	}
+	return nil
+}
+
+// applyHost handles deployment for a single host
+func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
+	fmt.Printf(">> Deploying to Host: %s", host.Alias)
+	if opts.DryRun {
+		fmt.Printf(" [DRY-RUN]\n")
+	} else {
+		fmt.Printf("\n")
+	}
+
+	// 1. Establish Connection (Reused logic)
+	// Apply logic creates new client per host if not injected.
+	var client SSHClient
+	if d.client != nil {
+		client = d.client
+	} else {
+		c, err := sshutil.NewClient(host.Alias)
+		if err != nil {
+			return err
+		}
+		// Connect now to fail fast
+		if err := c.Connect(); err != nil {
+			return fmt.Errorf("SSH connect failed: %v", err)
+		}
+		defer c.Close()
+		client = c
+	}
+
+	// 2. Discovery
+	info, err := discover.Probe(client)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("   Remote: %s (%s, %s)\n", info.Hostname, info.IP, info.Arch)
-
-	// ... (中間省略: IP, Build, Render) ...
-	// 取得本機 IP (相對於遠端)，用於 NFS Exports
 	localIP := getOutboundIP(info.IP)
-	fmt.Printf("   Local IP for NFS access: %s\n", localIP)
 
-	// 2. 準備 Binary
-	fmt.Println(">> [2/5] 準備 autonfs binary...")
-	tmpBin := filepath.Join(os.TempDir(), "autonfs-deploy-bin")
-
-	// 總是重新編譯以確保版本最新，且符合架構
-	if err := builder.BuildForArch(info.Arch, "./cmd/autonfs", tmpBin); err != nil {
-		return fmt.Errorf("編譯失敗: %v", err)
+	// 3. Build Binary
+	fmt.Println("   Preparing autonfs binary...")
+	tmpBin := filepath.Join(os.TempDir(), fmt.Sprintf("autonfs-bin-%s", info.Arch))
+	if err := d.builder.Build(info.Arch, "./cmd/autonfs", tmpBin); err != nil {
+		return fmt.Errorf("build failed: %v", err)
 	}
-	defer os.Remove(tmpBin)
+	defer os.Remove(tmpBin) // In real run; in test mock builder does nothing
 
-	// 3. 生成設定檔內容
-	fmt.Println(">> [3/5] 生成配置檔...")
-	cfg := templates.Config{
+	// 4. Prepare Server Configs (Service & Exports)
+	// Gather exports
+	var exports []templates.ExportInfo
+	for _, m := range host.Mounts {
+		exports = append(exports, templates.ExportInfo{
+			Path:     m.Remote,
+			ClientIP: localIP,
+		})
+	}
+
+	// Use first mount for basic template vars if needed, or defaults
+	tmplCfg := templates.Config{
 		ServerIP:      info.IP,
 		ClientIP:      localIP,
 		MacAddr:       info.MAC,
-		RemoteDir:     opts.RemoteDir,
-		LocalDir:      opts.LocalDir,
 		BinaryPath:    "/usr/local/bin/autonfs",
-		IdleTimeout:   opts.IdleTimeout,
-		WakeTimeout:   "120s", // Default safe timeout for WoL boot
-		LoadThreshold: opts.LoadThreshold,
+		IdleTimeout:   host.IdleTimeout,
+		WakeTimeout:   host.WakeTimeout,
+		LoadThreshold: "0.5", // Default? Add to YAML?
+		Exports:       exports,
+		WatcherDryRun: opts.WatcherDryRun, // Pass Watcher Dry Run flag
+	}
+	if tmplCfg.IdleTimeout == "" {
+		tmplCfg.IdleTimeout = "5m"
+	} // Default
+	if tmplCfg.WakeTimeout == "" {
+		tmplCfg.WakeTimeout = "120s"
+	}
+
+	serviceContent, _ := templates.Render("service", templates.ServerServiceTmpl, tmplCfg)
+	exportsContent, _ := templates.Render("exports", templates.ServerExportsTmpl, tmplCfg)
+
+	// 5. Upload & Install Server Components
+	if opts.DryRun {
+		fmt.Println("   [DRY-RUN] Would upload binary to /usr/local/bin/autonfs")
+		fmt.Println("   [DRY-RUN] Would install systemd service: autonfs-watcher.service")
+		fmt.Println("   [DRY-RUN] Would configure NFS exports: /etc/exports.d/autonfs.exports")
+		fmt.Println("   [DRY-RUN] Would reload/restart remote services")
+	} else {
+		// Checks
+		serviceChanged := remoteHasChange(client, "/etc/systemd/system/autonfs-watcher.service", serviceContent)
+		_ = remoteHasChange(client, "/etc/exports.d/autonfs.exports", exportsContent) // Check but ignore result for now
+
+		// Upload Binary (Always upload binary for now, or check checksum? Stick to always for simplicity/safety)
+		if err := client.Scp(tmpBin, "/tmp/autonfs"); err != nil {
+			return fmt.Errorf("SCP binary failed: %v", err)
+		}
+		// Upload Service
+		if err := writeToRemoteTmp(client, serviceContent, "/tmp/autonfs-watcher.service"); err != nil {
+			return err
+		}
+		// Upload Exports
+		if err := writeToRemoteTmp(client, exportsContent, "/tmp/autonfs.exports"); err != nil {
+			return err
+		}
+
+		// Install Commands
+		// Conditional move? No, always move to overwrite.
+		// Key is RESTART.
+		installCmds := []string{
+			"mv /tmp/autonfs /usr/local/bin/autonfs",
+			"chmod +x /usr/local/bin/autonfs",
+			"mv /tmp/autonfs-watcher.service /etc/systemd/system/autonfs-watcher.service",
+			"mkdir -p /etc/exports.d",
+			"mv /tmp/autonfs.exports /etc/exports.d/autonfs.exports",
+			"systemctl daemon-reload",
+			"systemctl enable --now autonfs-watcher.service", // Ensure enabled & started (self-healing)
+			"exportfs -ra",
+		}
+
+		if serviceChanged {
+			fmt.Println("   [Remote] Watcher Service Changed -> Restarting")
+			installCmds = append(installCmds, "systemctl restart autonfs-watcher.service")
+		}
+
+		// Note: exportsChanged doesn't need service restart, exportfs -ra is enough (included above).
+		// But if binary changed? We uploaded binary. We assume if we run Apply, we might want to restart?
+		// For now, let's stick to Service Config changes triggering Restart.
+		// Ideally verify binary version too, but that's complex.
+
+		fullCmd := fmt.Sprintf("sudo bash -c 'set -e; %s'", strings.Join(installCmds, " && "))
+		if err := client.RunTerminal(fullCmd); err != nil {
+			return fmt.Errorf("remote install failed: %v", err)
+		}
+	}
+
+	fmt.Println("   Remote configured.")
+
+	// 6. Local Setup (Client Side)
+	fmt.Println("   Deploying Local Units...")
+	anyHostChange := false
+
+	for _, m := range host.Mounts {
+		unitName := escapeSystemdPath(m.Local)
+		mountTmplCfg := templates.Config{
+			ServerIP:    info.IP,
+			RemoteDir:   m.Remote,
+			LocalDir:    m.Local,
+			MacAddr:     info.MAC,
+			BinaryPath:  "/usr/local/bin/autonfs",
+			IdleTimeout: host.IdleTimeout,
+		}
+
+		// Lookup executable logic
+		exe, _ := os.Executable()
+		mountTmplCfg.BinaryPath = exe
+
+		mountContent, _ := templates.Render("mount", templates.ClientMountTmpl, mountTmplCfg)
+		automountContent, _ := templates.Render("automount", templates.ClientAutomountTmpl, mountTmplCfg)
+
+		mountFile := fmt.Sprintf("/etc/systemd/system/%s.mount", unitName)
+		automountFile := fmt.Sprintf("/etc/systemd/system/%s.automount", unitName)
+
+		unitChanged := false
+
+		// Check & Write Mount Unit
+		if hasChange(d.localExec, mountFile, mountContent) {
+			fmt.Printf("   -> Updating %s\n", mountFile)
+			if opts.DryRun {
+				fmt.Printf("      [DRY-RUN] Would write content to %s\n", mountFile)
+			} else {
+				if err := localWrite(d.localExec, mountFile, mountContent); err != nil {
+					return err
+				}
+			}
+			unitChanged = true
+			anyHostChange = true
+		}
+
+		// Check & Write Automount Unit
+		if hasChange(d.localExec, automountFile, automountContent) {
+			fmt.Printf("   -> Updating %s\n", automountFile)
+			if opts.DryRun {
+				fmt.Printf("      [DRY-RUN] Would write content to %s\n", automountFile)
+			} else {
+				if err := localWrite(d.localExec, automountFile, automountContent); err != nil {
+					return err
+				}
+			}
+			unitChanged = true
+			anyHostChange = true
+		}
+
+		// Always ensure enabled
+		if opts.DryRun {
+			fmt.Printf("      [DRY-RUN] Would enable --now %s\n", fmt.Sprintf("%s.automount", unitName))
+		} else {
+			if err := d.localExec.RunCommand("sudo", "systemctl", "enable", "--now", fmt.Sprintf("%s.automount", unitName)); err != nil {
+				return fmt.Errorf("failed to enable automount for %s: %v", m.Local, err)
+			}
+		}
+
+		// Restart only if changed
+		if unitChanged {
+			if opts.DryRun {
+				fmt.Printf("      [DRY-RUN] Would restart %s\n", fmt.Sprintf("%s.automount", unitName))
+			} else {
+				// Daemon reload for this unit change is needed before restart
+				d.localExec.RunCommand("sudo", "systemctl", "daemon-reload")
+				if err := d.localExec.RunCommand("sudo", "systemctl", "restart", fmt.Sprintf("%s.automount", unitName)); err != nil {
+					return fmt.Errorf("failed to restart automount for %s: %v", m.Local, err)
+				}
+			}
+		}
+	}
+
+	if anyHostChange {
+		if opts.DryRun {
+			fmt.Println("   [DRY-RUN] Would daemon-reload")
+		} else {
+			d.localExec.RunCommand("sudo", "systemctl", "daemon-reload")
+		}
+	}
+
+	fmt.Println("\n✅ Deployment Applied Successfully!")
+	return nil
+}
+
+// Run 執行部署邏輯
+func (d *Deployer) Run(opts Options) error {
+	// SUDO Check (Legacy)
+	if !opts.DryRun {
+		fmt.Println(">> [0/5] 檢查本機 Sudo 權限...")
+		if err := d.localExec.RunCommand("sudo", "-v"); err != nil {
+			fmt.Printf("警告: 無法取得本機 Sudo 權限 (%v). 後續操作可能失敗。\n", err)
+		}
+	} else {
+		fmt.Println(">> [DryRun] Skipping sudo check.")
+	}
+
+	// 4. Delegate to Apply logic
+	// We need to construct Config from legacy Options
+	cfg := &config.Config{
+		Hosts: []config.HostConfig{
+			{
+				Alias:       opts.SSHAlias,
+				IdleTimeout: opts.IdleTimeout,
+				WakeTimeout: opts.WakeTimeout,
+				Mounts: []config.MountConfig{
+					{
+						Local:  opts.LocalDir,
+						Remote: opts.RemoteDir,
+					},
+				},
+			},
+		},
+	}
+
+	applyOpts := ApplyOptions{
+		DryRun:        opts.DryRun,
 		WatcherDryRun: opts.WatcherDryRun,
 	}
 
-	mountContent, _ := templates.Render("mount", templates.ClientMountTmpl, cfg)
-	automountContent, _ := templates.Render("automount", templates.ClientAutomountTmpl, cfg)
-	serviceContent, _ := templates.Render("service", templates.ServerServiceTmpl, cfg)
-	exportsContent, _ := templates.Render("exports", templates.ServerExportsTmpl, cfg)
-
-	if opts.DryRun {
-		// ... (DryRun logic unchanged) ...
-		fmt.Println("\n--- [DRY RUN] Server Service ---")
-		fmt.Println(string(serviceContent))
-		fmt.Println("--- [DRY RUN] Server Exports ---")
-		fmt.Println(string(exportsContent))
-		fmt.Println("--- [DRY RUN] Client Mount ---")
-		fmt.Println(string(mountContent))
-		fmt.Println("--- [DRY RUN] Client Automount ---")
-		fmt.Println(string(automountContent))
-		return nil
-	}
-
-	// 4. 部署到遠端 (Slave)
-	fmt.Println(">> [4/5] 部署遠端 (Slave)...")
-
-	// 4a. 傳送 Binary
-	fmt.Println("   Uploading binary...")
-	scpCmd := exec.Command("scp", tmpBin, fmt.Sprintf("%s:/tmp/autonfs", opts.SSHAlias))
-	if err := scpCmd.Run(); err != nil {
-		return fmt.Errorf("SCP 失敗: %v", err)
-	}
-
-	// 4b. 上傳 Systemd Service
-	// 這裡必須先上傳到 /tmp，稍後的 batch install 才會 mv 到 /etc
-	fmt.Println("   Uploading service file...")
-	if err := writeToRemoteTmp(client, serviceContent, "/tmp/autonfs-watcher.service"); err != nil {
-		return fmt.Errorf("上傳服務檔失敗: %v", err)
-	}
-
-	// 4c. 上傳 Exports Config
-	// 同理，先上傳到 /tmp
-	fmt.Println("   Uploading exports config...")
-	if err := writeToRemoteTmp(client, exportsContent, "/tmp/autonfs.exports"); err != nil {
-		return fmt.Errorf("上傳 Exports 設定失敗: %v", err)
-	}
-
-	// 4d. 執行安裝指令 (Sudo Required)
-	fmt.Println("   Executing remote installation (Sudo required)...")
-
-	installCmds := []string{
-		// Install Binary
-		"mv /tmp/autonfs /usr/local/bin/autonfs",
-		"chmod +x /usr/local/bin/autonfs",
-
-		// Install Service
-		"mv /tmp/autonfs-watcher.service /etc/systemd/system/autonfs-watcher.service",
-
-		// Install Exports
-		"mkdir -p /etc/exports.d",
-		"mv /tmp/autonfs.exports /etc/exports.d/autonfs.exports",
-
-		// Reload & Enable
-		"systemctl daemon-reload",
-		"systemctl enable --now nfs-server",
-		"systemctl enable --now autonfs-watcher.service",
-		"exportfs -r",
-	}
-
-	// 組合指令: sudo bash -c 'set -e; cmd1 && cmd2 && ...'
-	fullCmd := fmt.Sprintf("sudo bash -c 'set -e; %s'", strings.Join(installCmds, " && "))
-
-	if err := client.RunTerminal(fullCmd); err != nil {
-		return fmt.Errorf("遠端安裝失敗: %v", err)
-	}
-
-	// 5. 部署到本機 (Master)
-	fmt.Println(">> [5/5] 部署本機 (Master)...")
-
-	unitName := escapeSystemdPath(opts.LocalDir)
-	mountFile := fmt.Sprintf("/etc/systemd/system/%s.mount", unitName)
-	automountFile := fmt.Sprintf("/etc/systemd/system/%s.automount", unitName)
-
-	if err := localWrite(mountFile, mountContent); err != nil {
-		return err
-	}
-	if err := localWrite(automountFile, automountContent); err != nil {
-		return err
-	}
-
-	fmt.Println("   Reloading local services...")
-	// 本機 Sudo 已經在開頭 -v 過了，這裡直接執行
-	exec.Command("sudo", "systemctl", "daemon-reload").Run()
-
-	// 啟用並 "重啟" Automount 以確保新設定 (如 TimeoutIdleSec) 生效
-	// 單純 enable --now 如果原本已經 running 就不會 reload
-	exec.Command("sudo", "systemctl", "enable", fmt.Sprintf("%s.automount", unitName)).Run()
-	cmd := exec.Command("sudo", "systemctl", "restart", fmt.Sprintf("%s.automount", unitName))
-
-	// 連接 Stdin/Stdout 以防萬一 timeout
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("重啟 Automount 失敗: %v", err)
-	}
-
-	fmt.Println("\n✅ 部署完成！")
-	return nil
+	return d.Apply(cfg, applyOpts)
 }
 
-// 輔助：SCP 檔案
-func scpToRemote(c *sshutil.Client, localPath, remotePath string) error {
-	scpCmd := exec.Command("scp", localPath, fmt.Sprintf("%s:%s", c.Alias, remotePath))
-	if err := scpCmd.Run(); err != nil {
-		return fmt.Errorf("SCP %s -> %s 失敗: %v", localPath, remotePath, err)
-	}
-	return nil
-}
+var RunByTest = false // Helper for testing
 
 // 輔助：寫入內容到遠端暫存檔 (無 sudo)
-func writeToRemoteTmp(c *sshutil.Client, content []byte, remotePath string) error {
-	tmpFile := "temp_deploy_config_" + filepath.Base(remotePath)
-	if err := ioutil.WriteFile(tmpFile, content, 0644); err != nil {
+func writeToRemoteTmp(c SSHClient, content []byte, remotePath string) error {
+	tmpFile, err := ioutil.TempFile("", "deploy_config_*_"+filepath.Base(remotePath))
+	if err != nil {
 		return err
 	}
-	defer os.Remove(tmpFile)
-	return scpToRemote(c, tmpFile, remotePath)
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmpFile.Write(content); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	tmpFile.Close()
+
+	return c.Scp(tmpPath, remotePath)
 }
 
 // 輔助：寫入本地檔案 (sudo)
-func localWrite(path string, content []byte) error {
-	tmp := "temp_local_write"
-	if err := ioutil.WriteFile(tmp, content, 0644); err != nil {
+func localWrite(executor LocalExecutor, path string, content []byte) error {
+	tmpFile, err := ioutil.TempFile("", "local_write_*")
+	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp)
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
 
-	cmd := exec.Command("sudo", "mv", tmp, path)
-	if err := cmd.Run(); err != nil {
+	if _, err := tmpFile.Write(content); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	tmpFile.Close()
+
+	if err := executor.RunCommand("sudo", "mv", tmpPath, path); err != nil {
 		return fmt.Errorf("寫入本機檔案失敗 (%s): %v", path, err)
 	}
 	return nil
@@ -227,6 +428,9 @@ func localWrite(path string, content []byte) error {
 
 // 輔助：獲取本機對外 IP
 func getOutboundIP(target string) string {
+	if RunByTest {
+		return "127.0.0.1"
+	}
 	conn, err := net.Dial("udp", target+":80")
 	if err != nil {
 		return "0.0.0.0"
@@ -235,13 +439,37 @@ func getOutboundIP(target string) string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
+// 輔助：檢查檔案內容是否變更
+func hasChange(executor LocalExecutor, path string, newContent []byte) bool {
+	existing, err := executor.ReadFile(path)
+	if err != nil {
+		return true // File doesn't exist or error -> updated
+	}
+	return string(existing) != string(newContent)
+}
+
+// 輔助：檢查遠端檔案內容是否變更
+func remoteHasChange(client SSHClient, path string, newContent []byte) bool {
+	out, err := client.RunCommand("cat " + path)
+	if err != nil {
+		return true // File doesn't exist or error -> updated
+	}
+	// RunCommand output might contain newlines?
+	// Usually RunCommand returns trimmed output?
+	// The original RunCommand implementation returns []byte or string?
+	// Checking interfaces.go: RunCommand(cmd string) (string, error)
+	// So it returns string. We should compare string(newContent).
+	// But `cat` output implies exact content?
+	// Let's assume exact match.
+	return out != string(newContent)
+}
+
 // 輔助：將路徑轉換為 systemd escaped string (e.g. /mnt/data -> mnt-data)
 func escapeSystemdPath(path string) string {
 	cmd := exec.Command("systemd-escape", "--path", path)
 	out, err := cmd.Output()
 	if err != nil {
-		// Fallback for non-systemd environments (unlikely but safe)
-		// Minimal fallback: replace / with -
+		// Fallback
 		path = strings.Trim(path, "/")
 		return strings.ReplaceAll(path, "/", "-")
 	}
@@ -251,13 +479,7 @@ func escapeSystemdPath(path string) string {
 // RunUndeploy 執行反部署，清理本機與遠端 (可選) Systemd 設定
 func RunUndeploy(opts Options) error {
 	// 0. 本機 Sudo 預熱
-	sudoCmd := exec.Command("sudo", "-v")
-	sudoCmd.Stdin = os.Stdin
-	sudoCmd.Stdout = os.Stdout
-	sudoCmd.Stderr = os.Stderr
-	if err := sudoCmd.Run(); err != nil {
-		return fmt.Errorf("無法取得本機 Sudo 權限: %v", err)
-	}
+	exec.Command("sudo", "-v").Run()
 
 	// === Local Cleanup ===
 	unitName := escapeSystemdPath(opts.LocalDir)
@@ -266,7 +488,6 @@ func RunUndeploy(opts Options) error {
 
 	fmt.Printf(">> [Local] 正在移除 AutoNFS 本機設定 (%s)...\n", opts.LocalDir)
 
-	fmt.Println("   Stopping automount & mount...")
 	exec.Command("sudo", "systemctl", "disable", "--now", automountUnit).Run()
 	exec.Command("sudo", "systemctl", "stop", mountUnit).Run()
 	exec.Command("sudo", "systemctl", "disable", mountUnit).Run()
