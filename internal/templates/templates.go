@@ -52,21 +52,29 @@ RestartSec=10
 WantedBy=multi-user.target
 `
 
-const ServerExportsTmpl = `{{.RemoteDir}} {{.ClientIP}}(rw,sync,no_subtree_check,no_root_squash)
-`
+const ServerExportsTmpl = `{{range .Exports}}
+{{.Path}} {{.ClientIP}}(rw,sync,no_subtree_check,no_root_squash)
+{{end}}`
+
+// ExportInfo 定義 NFS Share 資訊
+type ExportInfo struct {
+	Path     string
+	ClientIP string
+}
 
 // Config 定義渲染模板所需的變數
 type Config struct {
 	ServerIP      string
-	ClientIP      string
+	ClientIP      string // Keep for Single-Mount templates usage if needed
 	MacAddr       string
-	RemoteDir     string
-	LocalDir      string
-	BinaryPath    string // /usr/local/bin/autonfs
-	IdleTimeout   string // e.g., "30m"
-	WakeTimeout   string // e.g., "120s"
-	LoadThreshold string // e.g., "0.5"
-	WatcherDryRun bool   // 是否開啟 Watcher 的 DryRun 模式
+	RemoteDir     string // Keep for valid fields in ClientMountTmpl
+	LocalDir      string // Keep for valid fields in ClientMountTmpl
+	BinaryPath    string
+	IdleTimeout   string
+	WakeTimeout   string
+	LoadThreshold string
+	WatcherDryRun bool
+	Exports       []ExportInfo // New field for multi-export
 }
 
 // Render 輔助函式

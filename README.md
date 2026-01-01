@@ -30,21 +30,39 @@ go build -o autonfs ./cmd/autonfs
 ```
 
 ### 2. 部署 (Deployment)
+推薦使用 **聲明式配置 (autonfs.yaml)** 進行部署，支援多台主機、多重掛載與冪等性更新。
 
-將本地 Master 的 `/mnt/nas` 掛載到遠端 Slave 的 `/data/files`。
-
-```bash
-# 語法: autonfs deploy [ssh_alias] [options]
-./autonfs deploy myserver \
-  --local-dir /mnt/nas \
-  --remote-dir /data/files \
-  --idle 30m \
-  --watcher-dry-run  # 建議初次部屬先開啟 DryRun 測試
+**1. 建立設定檔 `autonfs.yaml`:**
+參考 `autonfs.yaml.example` 獲得完整範例：
+```yaml
+hosts:
+  - alias: "nas-server"       # SSH Alias
+    idle_timeout: "30m"
+    mounts:
+      - local: "/mnt/movies"
+        remote: "/volume1/movies"
 ```
 
-*   `myserver`: 您的 SSH config alias (或 `user@ip`)。
-*   `--idle`: 設定閒置多久後關機 (Master 會先斷線，Slave 接著關機)。
-*   `--watcher-dry-run`: 測試模式，Slave 時間到只會寫 Log 不會真關機。
+**2. 模擬執行 (Dry Run):**
+在實際部署前，強烈建議先進行模擬，預覽將發生的變更：
+```bash
+./autonfs apply -f autonfs.yaml --dry-run
+```
+
+**3. 正式部署 (Apply):**
+```bash
+./autonfs apply -f autonfs.yaml
+```
+*   **冪等性 (Idempotency)**: 若設定無變更，執行此指令不會重啟服務或覆寫檔案。
+*   **自我修復 (Self-Healing)**: 若服務異常停止，執行此指令會嘗試重新啟動。
+*   **Watcher Dry Run**: 若想觀察 Watcher 行為但不希望自動關機，可加 `--watcher-dry-run`。
+
+> **Legacy 模式**: 舊版指令式部署仍向下相容：
+> ```bash
+> ./autonfs deploy myserver --local-dir /mnt/nas --remote-dir /data/files
+> ```
+
+
 
 ### 3. 反部署 (Undeploy)
 

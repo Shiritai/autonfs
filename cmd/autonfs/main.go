@@ -185,7 +185,32 @@ func main() {
 	undeployCmd.Flags().StringVar(&undeployLocal, "local-dir", "/mnt/remote_data", "本機掛載點")
 	undeployCmd.MarkFlagRequired("local-dir")
 
-	rootCmd.AddCommand(debugCmd, wakeCmd, watchCmd, deployCmd, undeployCmd)
+	// --- Apply Command ---
+	var (
+		applyCfgFile    string
+		applyDryRun     bool
+		applyWatcherDry bool
+	)
+	var applyCmd = &cobra.Command{
+		Use:   "apply",
+		Short: "根據設定檔 (autonfs.yaml) 部署或更新設定",
+		Run: func(cmd *cobra.Command, args []string) {
+			opts := ApplyOptions{
+				ConfigPath:    applyCfgFile,
+				DryRun:        applyDryRun,
+				WatcherDryRun: applyWatcherDry,
+			}
+			if err := RunApply(opts); err != nil {
+				fmt.Printf("Apply 失敗: %v\n", err)
+				os.Exit(1)
+			}
+		},
+	}
+	applyCmd.Flags().StringVarP(&applyCfgFile, "file", "f", "autonfs.yaml", "設定檔路徑")
+	applyCmd.Flags().BoolVarP(&applyDryRun, "dry-run", "n", false, "僅模擬執行 (不寫入檔案)")
+	applyCmd.Flags().BoolVar(&applyWatcherDry, "watcher-dry-run", false, "部署 Watcher 為 Dry Run 模式 (只 Log 不關機)")
+
+	rootCmd.AddCommand(debugCmd, wakeCmd, watchCmd, deployCmd, undeployCmd, applyCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)

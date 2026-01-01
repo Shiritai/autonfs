@@ -1,0 +1,46 @@
+# AutoNFS 配置範例 (autonfs.yaml)
+# 
+# 這是一個聲明式的設定檔，用於定義您的 NFS 主機與掛載點。
+# 使用 `autonfs apply -f autonfs.yaml` 來套用此設定。
+#
+# [安全部署建議]
+# 1. 模擬執行 (Dry Run): `autonfs apply -f autonfs.yaml --dry-run`
+#    - 預覽即將發生的變更 (檔案寫入、服務重啟等)，不實際執行。
+#
+# 2. Watcher 模擬: `autonfs apply --watcher-dry-run`
+#    - 部署後的 Watcher 服務僅記錄 Log，不會執行真正的關機指令 (適合初期觀察)。
+#
+# 注意：變更此檔案後重新執行 apply，系統會自動比對差異：
+# - 若變更 Config，會觸發必要的服務重啟。
+# - 若 Config 無變更，則不會有副作用 (Idempotent)。
+# - 若有服務停止，會自動嘗試啟動 (Self-Healing)。
+
+hosts:
+  # ==========================================
+  # 範例 1: 基本單一掛載 (Minimal)
+  # ==========================================
+  - alias: "nas-home"       # [必填] SSH Config 中的 Host Alias (建議) 或 user@ip
+    mounts:
+      - local: "/mnt/movies"        # [必填] 本機掛載路徑 (會自動建立 Systemd Mount Unit)
+        remote: "/volume1/movies"   # [必填] 遠端 NFS Export 路徑
+
+  # ==========================================
+  # 範例 2: 進階設定與多重掛載
+  # ==========================================
+  - alias: "nas-backup"
+    
+    # [Timeout 全域設定] (可選)
+    idle_timeout: "30m"     # 閒置多少時間後自動斷線/關機 (預設 5m)
+                            # 支援單位: s, m, h (例如 "120s", "1h")
+    
+    wake_timeout: "180s"    # 等待 WoL 喚醒的最大秒數 (預設 120s)
+                            # 若您的伺服器開機較慢 (如 RAID 初始化)，請增加此數值
+
+    mounts:
+      # 掛載點 A
+      - local: "/mnt/backup_photos"
+        remote: "/volume2/photos"
+      
+      # 掛載點 B (同一主機會共用連線與 Watcher)
+      - local: "/mnt/backup_docs"
+        remote: "/volume2/documents"
