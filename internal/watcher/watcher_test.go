@@ -2,7 +2,6 @@ package watcher
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,7 +11,7 @@ import (
 
 // Helper to create a temp file with content
 func createTempFile(t *testing.T, dir, pattern, content string) *os.File {
-	f, err := ioutil.TempFile(dir, pattern)
+	f, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		t.Fatalf("Failed to create temp file: %v", err)
 	}
@@ -28,7 +27,7 @@ func TestCheckLoad(t *testing.T) {
 	highLoadFile := createTempFile(t, "", "loadavg_high", "1.50 0.50 0.20 1/500 12345")
 	defer os.Remove(highLoadFile.Name())
 
-	m := NewMonitor()
+	m := NewMonitor(nil)
 	m.ProcLoadAvg = highLoadFile.Name()
 
 	isLow, load, err := m.checkLoad(0.5)
@@ -55,13 +54,13 @@ func TestCheckLoad(t *testing.T) {
 
 func TestGetNFSv4Clients(t *testing.T) {
 	// Mock Clients Directory
-	tmpDir, err := ioutil.TempDir("", "nfsd_clients")
+	tmpDir, err := os.MkdirTemp("", "nfsd_clients")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	m := NewMonitor()
+	m := NewMonitor(nil)
 	m.ProcNFSv4 = tmpDir
 
 	// Case 1: Empty directory (No clients)
@@ -78,7 +77,10 @@ func TestGetNFSv4Clients(t *testing.T) {
 	if err := os.Mkdir(clientDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	createTempFile(t, clientDir, "info", "address: \"192.168.1.200:54321\"\n")
+	infoPath := filepath.Join(clientDir, "info")
+	if err := os.WriteFile(infoPath, []byte("address: \"192.168.1.200:54321\"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	clients, err = m.getNFSv4Clients()
 	if err != nil {
 		t.Fatalf("getNFSv4Clients failed: %v", err)
@@ -104,7 +106,7 @@ proc4 2 5 0
 	rpcFile := createTempFile(t, "", "nfsd_rpc", content)
 	defer os.Remove(rpcFile.Name())
 
-	m := NewMonitor()
+	m := NewMonitor(nil)
 	m.ProcRPC = rpcFile.Name()
 
 	count, err := m.getNFSProcCount()
@@ -132,7 +134,7 @@ func TestMonitor_Watch_Integration_V2(t *testing.T) {
 	loadFile := createTempFile(t, "", "load", "0.00 0.00 0.00 1/100 1")
 	defer os.Remove(loadFile.Name())
 
-	clientsDir, _ := ioutil.TempDir("", "clients")
+	clientsDir, _ := os.MkdirTemp("", "clients")
 	defer os.RemoveAll(clientsDir)
 
 	// Initial RPC content
@@ -143,7 +145,7 @@ func TestMonitor_Watch_Integration_V2(t *testing.T) {
 	wg.Add(1)
 	shutdownCalled := false
 
-	m := NewMonitor()
+	m := NewMonitor(nil)
 	m.ProcLoadAvg = loadFile.Name()
 	m.ProcNFSv4 = clientsDir // Empty initially
 	m.ProcRPC = rpcFile.Name()
