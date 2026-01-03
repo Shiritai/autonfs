@@ -135,3 +135,19 @@ stateDiagram-v2
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPLv3)**.
 See [LICENSE](LICENSE) for details.
+
+---
+
+## ⚠️ Troubleshooting
+
+### Q: Why doesn't the Master unmount automatically?
+**A:** Check if you are still inside the mount directory (e.g., shell `cd /mnt/nas`). Please execute `cd ~` to leave the directory, otherwise the mount point will be busy and cannot be unmounted.
+
+### Q: The Slave doesn't shut down after deployment?
+**A:**
+1.  Check if the Master has unmounted (`mount | grep nfs`).
+2.  Check the Slave logs (`journalctl -u autonfs-watcher`) to confirm if there are other clients or high load.
+3.  Confirm if `--watcher-dry-run` was enabled.
+
+### Q: Deployment fails with "File not found" or "Permission denied"?
+**A:** Please ensure the SSH user has `sudo` privileges. AutoNFS requires sudo to write to `/etc/systemd/system` and `/etc/exports.d` during deployment.
