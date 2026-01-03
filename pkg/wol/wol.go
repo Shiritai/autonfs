@@ -6,10 +6,10 @@ import (
 	"time"
 )
 
-// MagicPacket 固定長度 102 Bytes (6 bytes header + 16 * 6 bytes MAC)
+// MagicPacket is 102 Bytes long (6 bytes header + 16 * 6 bytes MAC)
 type MagicPacket [102]byte
 
-// NewMagicPacket 建立 WoL 封包
+// NewMagicPacket creates a WoL packet
 func NewMagicPacket(macAddr string) (*MagicPacket, error) {
 	mac, err := net.ParseMAC(macAddr)
 	if err != nil {
@@ -28,7 +28,7 @@ func NewMagicPacket(macAddr string) (*MagicPacket, error) {
 	return &packet, nil
 }
 
-// Send 發送 WoL 封包 (Broadcast)
+// Send broadcasts the WoL packet
 func (mp *MagicPacket) Send(broadcastIP string) error {
 	addr := fmt.Sprintf("%s:9", broadcastIP) // Port 9 is standard for WoL
 	conn, err := net.Dial("udp", addr)
@@ -41,7 +41,7 @@ func (mp *MagicPacket) Send(broadcastIP string) error {
 	return err
 }
 
-// WaitForPort 等待目標 Port 開啟 (TCP Check)
+// WaitForPort waits for the target TCP port to open
 func WaitForPort(ip string, port int, timeout time.Duration) error {
 	target := fmt.Sprintf("%s:%d", ip, port)
 	deadline := time.Now().Add(timeout)
@@ -50,9 +50,9 @@ func WaitForPort(ip string, port int, timeout time.Duration) error {
 		conn, err := net.DialTimeout("tcp", target, 1*time.Second)
 		if err == nil {
 			conn.Close()
-			return nil // 成功連線
+			return nil // Connection successful
 		}
 		time.Sleep(1 * time.Second)
 	}
-	return fmt.Errorf("等待 %s 超時", target)
+	return fmt.Errorf("timeout waiting for %s", target)
 }
