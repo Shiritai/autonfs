@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-// Options 部署選項
+// Options Deployment Options
 type Options struct {
 	SSHAlias      string
 	LocalDir      string
@@ -62,14 +62,14 @@ func (e *defaultLocalExecutor) ReadFile(path string) ([]byte, error) {
 	return ioutil.ReadFile(path)
 }
 
-// Deployer 負責部署邏輯，支援依賴注入
+// Deployer handles deployment logic, supports dependency injection
 type Deployer struct {
 	client    SSHClient
 	builder   ArtifactBuilder
 	localExec LocalExecutor
 }
 
-// NewDeployer 建立 Deployer
+// NewDeployer creates a new Deployer
 func NewDeployer(client SSHClient) *Deployer {
 	return &Deployer{
 		client:    client,
@@ -78,11 +78,7 @@ func NewDeployer(client SSHClient) *Deployer {
 	}
 }
 
-// NewDeployerWithBuilder allows injecting a custom builder and executor?
-// Let's create a generic "NewDeployerWithMocks" or just setters?
-// Or update NewDeployerWithBuilder to accept more.
-// For now, let's just make a new constructor or use options pattern?
-// Let's keep it simple: NewDeployerWithDeps
+// NewDeployerWithDeps allows injecting dependencies (for testing)
 func NewDeployerWithDeps(client SSHClient, builder ArtifactBuilder, localExec LocalExecutor) *Deployer {
 	return &Deployer{
 		client:    client,
@@ -91,15 +87,15 @@ func NewDeployerWithDeps(client SSHClient, builder ArtifactBuilder, localExec Lo
 	}
 }
 
-// RunDeploy 執行完整部署流程
+// RunDeploy executes the full deployment process
 func RunDeploy(opts Options) error {
-	// 1. 連線
-	fmt.Println(">> [1/5] 連線並探索環境...")
+	// 1. Connect
+	fmt.Println(">> [1/5] Connecting and discovering environment...")
 	client, err := sshutil.NewClient(opts.SSHAlias)
 	if err != nil {
 		return err
 	}
-	// 建立持久連線
+	// Persistent connection
 	if err := client.Connect(); err != nil {
 		return err
 	}
@@ -347,13 +343,13 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 	return nil
 }
 
-// Run 執行部署邏輯
+// Run executes the deployment logic
 func (d *Deployer) Run(opts Options) error {
 	// SUDO Check (Legacy)
 	if !opts.DryRun {
-		fmt.Println(">> [0/5] 檢查本機 Sudo 權限...")
+		fmt.Println(">> [0/5] Checking local Sudo privileges...")
 		if err := d.localExec.RunCommand("sudo", "-v"); err != nil {
-			fmt.Printf("警告: 無法取得本機 Sudo 權限 (%v). 後續操作可能失敗。\n", err)
+			fmt.Printf("Warning: Failed to obtain sudo privileges (%v). Subsequent operations may fail.\n", err)
 		}
 	} else {
 		fmt.Println(">> [DryRun] Skipping sudo check.")
@@ -387,7 +383,7 @@ func (d *Deployer) Run(opts Options) error {
 
 var RunByTest = false // Helper for testing
 
-// 輔助：寫入內容到遠端暫存檔 (無 sudo)
+// Helper: Write content to remote temp file (no sudo)
 func writeToRemoteTmp(c SSHClient, content []byte, remotePath string) error {
 	tmpFile, err := ioutil.TempFile("", "deploy_config_*_"+filepath.Base(remotePath))
 	if err != nil {
@@ -405,7 +401,7 @@ func writeToRemoteTmp(c SSHClient, content []byte, remotePath string) error {
 	return c.Scp(tmpPath, remotePath)
 }
 
-// 輔助：寫入本地檔案 (sudo)
+// Helper: Write to local file (sudo)
 func localWrite(executor LocalExecutor, path string, content []byte) error {
 	tmpFile, err := ioutil.TempFile("", "local_write_*")
 	if err != nil {
@@ -421,12 +417,12 @@ func localWrite(executor LocalExecutor, path string, content []byte) error {
 	tmpFile.Close()
 
 	if err := executor.RunCommand("sudo", "mv", tmpPath, path); err != nil {
-		return fmt.Errorf("寫入本機檔案失敗 (%s): %v", path, err)
+		return fmt.Errorf("failed to write local file (%s): %v", path, err)
 	}
 	return nil
 }
 
-// 輔助：獲取本機對外 IP
+// Helper: Get local outbound IP
 func getOutboundIP(target string) string {
 	if RunByTest {
 		return "127.0.0.1"
@@ -439,7 +435,7 @@ func getOutboundIP(target string) string {
 	return conn.LocalAddr().(*net.UDPAddr).IP.String()
 }
 
-// 輔助：檢查檔案內容是否變更
+// Helper: Check if file content changed
 func hasChange(executor LocalExecutor, path string, newContent []byte) bool {
 	existing, err := executor.ReadFile(path)
 	if err != nil {
@@ -448,7 +444,7 @@ func hasChange(executor LocalExecutor, path string, newContent []byte) bool {
 	return string(existing) != string(newContent)
 }
 
-// 輔助：檢查遠端檔案內容是否變更
+// Helper: Check if remote file content changed
 func remoteHasChange(client SSHClient, path string, newContent []byte) bool {
 	out, err := client.RunCommand("cat " + path)
 	if err != nil {
@@ -464,7 +460,7 @@ func remoteHasChange(client SSHClient, path string, newContent []byte) bool {
 	return out != string(newContent)
 }
 
-// 輔助：將路徑轉換為 systemd escaped string (e.g. /mnt/data -> mnt-data)
+// Helper: Convert path to systemd escaped string (e.g. /mnt/data -> mnt-data)
 func escapeSystemdPath(path string) string {
 	cmd := exec.Command("systemd-escape", "--path", path)
 	out, err := cmd.Output()
@@ -476,9 +472,9 @@ func escapeSystemdPath(path string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// RunUndeploy 執行反部署，清理本機與遠端 (可選) Systemd 設定
+// RunUndeploy Execute undeploy, cleanup local and remote (optional)
 func RunUndeploy(opts Options) error {
-	// 0. 本機 Sudo 預熱
+	// 0. Local Sudo Warmup
 	exec.Command("sudo", "-v").Run()
 
 	// === Local Cleanup ===
@@ -486,7 +482,7 @@ func RunUndeploy(opts Options) error {
 	automountUnit := fmt.Sprintf("%s.automount", unitName)
 	mountUnit := fmt.Sprintf("%s.mount", unitName)
 
-	fmt.Printf(">> [Local] 正在移除 AutoNFS 本機設定 (%s)...\n", opts.LocalDir)
+	fmt.Printf(">> [Local] Removing AutoNFS local config (%s)...\n", opts.LocalDir)
 
 	exec.Command("sudo", "systemctl", "disable", "--now", automountUnit).Run()
 	exec.Command("sudo", "systemctl", "stop", mountUnit).Run()
@@ -504,14 +500,14 @@ func RunUndeploy(opts Options) error {
 
 	// === Remote Cleanup (Optional) ===
 	if opts.SSHAlias != "" {
-		fmt.Printf("\n>> [Remote] 正在清理遠端主機 (%s)...\n", opts.SSHAlias)
+		fmt.Printf("\n>> [Remote] Cleaning up remote host (%s)...\n", opts.SSHAlias)
 
 		client, err := sshutil.NewClient(opts.SSHAlias)
 		if err != nil {
-			return fmt.Errorf("無法建立 SSH 連線: %v", err)
+			return fmt.Errorf("failed to establish SSH connection: %v", err)
 		}
 		if err := client.Connect(); err != nil {
-			return fmt.Errorf("SSH 連線失敗: %v", err)
+			return fmt.Errorf("SSH connection failed: %v", err)
 		}
 		defer client.Close()
 
@@ -526,11 +522,11 @@ func RunUndeploy(opts Options) error {
 		fullCmd := fmt.Sprintf("sudo bash -c '%s'", strings.Join(cleanupCmds, " && "))
 		fmt.Println("   Executing remote cleanup commands...")
 		if err := client.RunTerminal(fullCmd); err != nil {
-			return fmt.Errorf("遠端清理失敗: %v", err)
+			return fmt.Errorf("remote cleanup failed: %v", err)
 		}
 		fmt.Println("   Remote cleanup done.")
 	}
 
-	fmt.Println("\n✅ 反部署完成！")
+	fmt.Println("\n✅ Undeploy Completed!")
 	return nil
 }

@@ -5,11 +5,11 @@ import (
 	"text/template"
 )
 
-// 我們定義四個核心模板
-// 1. Client Mount: 定義 NFS 掛載參數與喚醒鉤子 (ExecStartPre)
-// 2. Client Automount: 定義按需掛載行為
-// 3. Server Service: 定義看門狗服務
-// 4. Server Exports: 定義 NFS 分享設定
+// We define four core templates:
+// 1. Client Mount: Defines NFS mount parameters and Wake-on-LAN hook (ExecStartPre)
+// 2. Client Automount: Defines on-demand mount behavior
+// 3. Server Service: Defines the idle watcher service
+// 4. Server Exports: Defines NFS export configuration
 
 const ClientMountTmpl = `[Unit]
 Description=AutoNFS Mount for {{.RemoteDir}}
@@ -20,7 +20,7 @@ What={{.ServerIP}}:{{.RemoteDir}}
 Where={{.LocalDir}}
 Type=nfs
 Options=rw,soft,timeo=100,retrans=3,actimeo=60
-# 關鍵：掛載前先喚醒，設定 10 秒逾時避免卡死
+# Critical: Wake up host before mount, set 10s timeout to avoid blocking indefinitely
 ExecStartPre={{.BinaryPath}} wake --mac "{{.MacAddr}}" --ip "{{.ServerIP}}" --port 2049 --timeout 10s
 `
 
@@ -56,13 +56,13 @@ const ServerExportsTmpl = `{{range .Exports}}
 {{.Path}} {{.ClientIP}}(rw,sync,no_subtree_check,no_root_squash)
 {{end}}`
 
-// ExportInfo 定義 NFS Share 資訊
+// ExportInfo defines NFS Share information
 type ExportInfo struct {
 	Path     string
 	ClientIP string
 }
 
-// Config 定義渲染模板所需的變數
+// Config defines variables for template rendering
 type Config struct {
 	ServerIP      string
 	ClientIP      string // Keep for Single-Mount templates usage if needed
@@ -77,7 +77,7 @@ type Config struct {
 	Exports       []ExportInfo // New field for multi-export
 }
 
-// Render 輔助函式
+// Render helper function
 func Render(name, tmplStr string, cfg Config) ([]byte, error) {
 	tmpl, err := template.New(name).Parse(tmplStr)
 	if err != nil {

@@ -19,34 +19,34 @@ func main() {
 	// --- Debug Command (Phase 1 & 2) ---
 	var debugCmd = &cobra.Command{
 		Use:   "debug [ssh_alias]",
-		Short: "測試連線與探索",
+		Short: "Test SSH connection and discovery",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			alias := args[0]
-			fmt.Printf("1. 解析配置: %s ...\n", alias)
+			fmt.Printf("1. Parsing config: %s ...\n", alias)
 
 			client, err := sshutil.NewClient(alias)
 			if err != nil {
-				fmt.Printf("錯誤: %v\n", err)
+				fmt.Printf("Error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("   -> 目標 Host: %s, User: %s\n", client.Host, client.User)
+			fmt.Printf("   -> Target Host: %s, User: %s\n", client.Host, client.User)
 
-			fmt.Println("2. 執行遠端探索 (Discovery)...")
+			fmt.Println("2. Performing Remote Discovery...")
 			info, err := discover.Probe(client)
 			if err != nil {
-				fmt.Printf("   -> 探索失敗: %v\n", err)
+				fmt.Printf("   -> Discovery failed: %v\n", err)
 				os.Exit(1)
 			}
 
 			fmt.Println("------------------------------------------------")
-			fmt.Printf("主機名稱 : %s\n", info.Hostname)
-			fmt.Printf("硬體架構 : %s\n", info.Arch)
-			fmt.Printf("網路介面 : %s\n", info.Interface)
-			fmt.Printf("IPv4位址 : %s (將用於 NFS 掛載)\n", info.IP)
-			fmt.Printf("MAC 位址 : %s (將用於 WoL 喚醒)\n", info.MAC)
+			fmt.Printf("Hostname    : %s\n", info.Hostname)
+			fmt.Printf("Architecture: %s\n", info.Arch)
+			fmt.Printf("Interface   : %s\n", info.Interface)
+			fmt.Printf("IPv4        : %s (For NFS Mount)\n", info.IP)
+			fmt.Printf("MAC Address : %s (For WoL Wake)\n", info.MAC)
 			fmt.Println("------------------------------------------------")
-			fmt.Println("Phase 2 驗證成功！資料已足夠生成配置檔。")
+			fmt.Println("Discovery successful! Sufficient data for configuration.")
 		},
 	}
 
@@ -60,37 +60,37 @@ func main() {
 	)
 	var wakeCmd = &cobra.Command{
 		Use:   "wake",
-		Short: "發送 WoL 並等待 Port 開啟",
+		Short: "Send WoL packet and wait for port open",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("嘗試喚醒 MAC: %s ...\n", wakeMac)
+			fmt.Printf("Waking MAC: %s ...\n", wakeMac)
 
-			// 1. 發送 WoL
+			// 1. Send WoL
 			packet, err := wol.NewMagicPacket(wakeMac)
 			if err != nil {
-				fmt.Printf("MAC 格式錯誤: %v\n", err)
+				fmt.Printf("Invalid MAC format: %v\n", err)
 				os.Exit(1)
 			}
-			// 這裡簡單假設廣播位址，Phase 4 生成配置時會填入更精確的
+			// Simple broadcast address assumption, refined in Phase 4
 			if err := packet.Send(wakeBcast); err != nil {
-				fmt.Printf("WoL 發送失敗: %v\n", err)
+				fmt.Printf("WoL send failed: %v\n", err)
 			} else {
-				fmt.Println("WoL 封包已發送")
+				fmt.Println("WoL packet sent.")
 			}
 
-			// 2. 等待 Port
-			fmt.Printf("等待主機 %s:%d 上線 (Timeout: %v)...\n", wakeIP, wakePort, wakeTimeout)
+			// 2. Wait for Port
+			fmt.Printf("Waiting for host %s:%d to come online (Timeout: %v)...\n", wakeIP, wakePort, wakeTimeout)
 			if err := wol.WaitForPort(wakeIP, wakePort, wakeTimeout); err != nil {
-				fmt.Printf("喚醒超時或失敗: %v\n", err)
+				fmt.Printf("Wake timeout or failed: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Println("主機已上線！")
+			fmt.Println("Host is online!")
 		},
 	}
 	wakeCmd.Flags().StringVar(&wakeMac, "mac", "", "MAC Address")
 	wakeCmd.Flags().StringVar(&wakeIP, "ip", "", "Target IP")
 	wakeCmd.Flags().StringVar(&wakeBcast, "bcast", "255.255.255.255", "Broadcast IP")
 	wakeCmd.Flags().IntVar(&wakePort, "port", 2049, "Target Port (Default: NFS 2049)")
-	wakeCmd.Flags().DurationVar(&wakeTimeout, "timeout", 120*time.Second, "等待喚醒逾時時間")
+	wakeCmd.Flags().DurationVar(&wakeTimeout, "timeout", 120*time.Second, "Timeout for wake up")
 	wakeCmd.MarkFlagRequired("mac")
 	wakeCmd.MarkFlagRequired("ip")
 
@@ -102,7 +102,7 @@ func main() {
 	)
 	var watchCmd = &cobra.Command{
 		Use:   "watch",
-		Short: "監控 NFS 連線與系統負載",
+		Short: "Monitor NFS connections and system load",
 		Run: func(cmd *cobra.Command, args []string) {
 			m := watcher.NewMonitor()
 			cfg := watcher.WatchConfig{
@@ -114,14 +114,14 @@ func main() {
 
 			// Blocking call
 			if err := m.Watch(cmd.Context(), cfg); err != nil {
-				fmt.Printf("監控異常終止: %v\n", err)
+				fmt.Printf("Monitor terminated abnormally: %v\n", err)
 				os.Exit(1)
 			}
 		},
 	}
-	watchCmd.Flags().DurationVar(&watchIdle, "timeout", 30*time.Minute, "閒置關機時間")
-	watchCmd.Flags().Float64Var(&watchLoad, "load", 0.5, "最低負載閾值")
-	watchCmd.Flags().BoolVar(&watchDryRun, "dry-run", false, "僅模擬，不執行關機")
+	watchCmd.Flags().DurationVar(&watchIdle, "timeout", 30*time.Minute, "Idle shutdown timeout")
+	watchCmd.Flags().Float64Var(&watchLoad, "load", 0.5, "Minimum load threshold")
+	watchCmd.Flags().BoolVar(&watchDryRun, "dry-run", false, "Simulation only, do not poweroff")
 
 	// --- Deploy Command ---
 	var (
@@ -135,7 +135,7 @@ func main() {
 
 	var deployCmd = &cobra.Command{
 		Use:   "deploy [ssh_alias]",
-		Short: "部署 AutoNFS 到本機與遠端",
+		Short: "Deploy AutoNFS to local and remote",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			opts := deployer.Options{
@@ -149,23 +149,23 @@ func main() {
 			}
 
 			if err := deployer.RunDeploy(opts); err != nil {
-				fmt.Printf("部署失敗: %v\n", err)
+				fmt.Printf("Deploy failed: %v\n", err)
 				os.Exit(1)
 			}
 		},
 	}
-	deployCmd.Flags().StringVar(&deployLocal, "local-dir", "/mnt/remote_data", "本機掛載點")
-	deployCmd.Flags().StringVar(&deployRemote, "remote-dir", "/mnt/hdd8tb", "遠端資料夾")
-	deployCmd.Flags().StringVar(&deployIdle, "idle", "30m", "閒置關機時間")
-	deployCmd.Flags().StringVar(&deployLoad, "load", "0.5", "負載閾值")
-	deployCmd.Flags().BoolVar(&deployDry, "dry-run", false, "僅顯示預覽，不執行")
-	deployCmd.Flags().BoolVar(&watcherDryRun, "watcher-dry-run", false, "讓遠端 Watcher 僅模擬關機 (測試用)")
+	deployCmd.Flags().StringVar(&deployLocal, "local-dir", "/mnt/remote_data", "Local mount point")
+	deployCmd.Flags().StringVar(&deployRemote, "remote-dir", "/mnt/hdd8tb", "Remote directory")
+	deployCmd.Flags().StringVar(&deployIdle, "idle", "30m", "Idle shutdown time")
+	deployCmd.Flags().StringVar(&deployLoad, "load", "0.5", "Load threshold")
+	deployCmd.Flags().BoolVar(&deployDry, "dry-run", false, "Preview only")
+	deployCmd.Flags().BoolVar(&watcherDryRun, "watcher-dry-run", false, "Watcher in dry-run mode (Log only)")
 
 	// --- Undeploy Command ---
 	var undeployLocal string
 	var undeployCmd = &cobra.Command{
 		Use:   "undeploy [ssh_alias]",
-		Short: "移除 AutoNFS 本機設定 (可選: 加上 ssh_alias 一併清理遠端)",
+		Short: "Remove AutoNFS local config (Optional: cleanup remote if alias provided)",
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			sshAlias := ""
@@ -177,12 +177,12 @@ func main() {
 				SSHAlias: sshAlias,
 			}
 			if err := deployer.RunUndeploy(opts); err != nil {
-				fmt.Printf("反部署失敗: %v\n", err)
+				fmt.Printf("Undeploy failed: %v\n", err)
 				os.Exit(1)
 			}
 		},
 	}
-	undeployCmd.Flags().StringVar(&undeployLocal, "local-dir", "/mnt/remote_data", "本機掛載點")
+	undeployCmd.Flags().StringVar(&undeployLocal, "local-dir", "/mnt/remote_data", "Local mount point")
 	undeployCmd.MarkFlagRequired("local-dir")
 
 	// --- Apply Command ---
@@ -193,7 +193,7 @@ func main() {
 	)
 	var applyCmd = &cobra.Command{
 		Use:   "apply",
-		Short: "根據設定檔 (autonfs.yaml) 部署或更新設定",
+		Short: "Deploy or update configuration from autonfs.yaml",
 		Run: func(cmd *cobra.Command, args []string) {
 			opts := ApplyOptions{
 				ConfigPath:    applyCfgFile,
@@ -201,14 +201,14 @@ func main() {
 				WatcherDryRun: applyWatcherDry,
 			}
 			if err := RunApply(opts); err != nil {
-				fmt.Printf("Apply 失敗: %v\n", err)
+				fmt.Printf("Apply failed: %v\n", err)
 				os.Exit(1)
 			}
 		},
 	}
-	applyCmd.Flags().StringVarP(&applyCfgFile, "file", "f", "autonfs.yaml", "設定檔路徑")
-	applyCmd.Flags().BoolVarP(&applyDryRun, "dry-run", "n", false, "僅模擬執行 (不寫入檔案)")
-	applyCmd.Flags().BoolVar(&applyWatcherDry, "watcher-dry-run", false, "部署 Watcher 為 Dry Run 模式 (只 Log 不關機)")
+	applyCmd.Flags().StringVarP(&applyCfgFile, "file", "f", "autonfs.yaml", "Config file path")
+	applyCmd.Flags().BoolVarP(&applyDryRun, "dry-run", "n", false, "dry-run (no write)")
+	applyCmd.Flags().BoolVar(&applyWatcherDry, "watcher-dry-run", false, "Deploy watcher in dry-run mode")
 
 	rootCmd.AddCommand(debugCmd, wakeCmd, watchCmd, deployCmd, undeployCmd, applyCmd)
 	if err := rootCmd.Execute(); err != nil {
