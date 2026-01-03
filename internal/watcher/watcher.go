@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,9 +76,8 @@ func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 		interval = 10 * time.Second
 	}
 
-	fmt.Printf("=== AutoNFS Watcher Started ===\n")
-	fmt.Printf("Config: Idle=%v, Load<%.2f, Interval=%v, DryRun=%v\n",
-		cfg.IdleTimeout, cfg.LoadThreshold, interval, cfg.DryRun)
+	slog.Info("=== AutoNFS Watcher Started ===")
+	slog.Info("Config", "idle_timeout", cfg.IdleTimeout, "load_threshold", cfg.LoadThreshold, "interval", interval, "dry_run", cfg.DryRun)
 
 	idleStart := time.Now()
 	ticker := time.NewTicker(interval)
@@ -95,7 +95,7 @@ func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 			// 1. Get Load
 			isLowLoad, loadVal, err := m.checkLoad(cfg.LoadThreshold)
 			if err != nil {
-				fmt.Printf("[Error] Read Load: %v\n", err)
+				slog.Error("Read Load failed", "error", err)
 			}
 
 			// 2. Get NFSv4 Clients
@@ -114,7 +114,7 @@ func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 				lastOps = currOps
 			} else {
 				// Only log critical RPC read errors
-				fmt.Printf("[Warn] Read RPC: %v\n", err)
+				slog.Warn("Read RPC failed", "error", err)
 			}
 
 			// --- Decision Phase ---
@@ -141,11 +141,9 @@ func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 
 			// --- Logging & Action Phase ---
 
-			now := time.Now().Format("15:04:05")
-
 			if isActive {
 				idleStart = time.Now()
-				fmt.Printf("%s [ACTIVE] %s | Load: %.2f | Ops: %d\n", now, activeReason, loadVal, opsDelta)
+				slog.Info("ACTIVE", "reason", activeReason, "load", loadVal, "ops", opsDelta)
 			} else {
 				rawIdleDur := time.Since(idleStart)
 				displayIdleDur := rawIdleDur.Truncate(time.Second)
@@ -159,17 +157,16 @@ func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 					displayTimeLeft = timeLeft // Show ms if < 1s
 				}
 
-				fmt.Printf("%s [IDLE]   Dataset: 0 clients, %d ops | Load: %.2f | Idle: %v (Shutdown in %v)\n",
-					now, opsDelta, loadVal, displayIdleDur, displayTimeLeft)
+				slog.Info("IDLE", "clients", 0, "ops", opsDelta, "load", loadVal, "idle_duration", displayIdleDur, "shutdown_in", displayTimeLeft)
 
 				if rawIdleDur > cfg.IdleTimeout {
-					fmt.Printf("%s [SHUTDOWN] Idle threshold reached.\n", now)
+					slog.Info("SHUTDOWN", "reason", "Idle threshold reached")
 					if !cfg.DryRun {
 						if err := m.ShutdownFunc(); err != nil {
-							fmt.Printf("[Error] Shutdown failed: %v\n", err)
+							slog.Error("Shutdown failed", "error", err)
 						}
 					} else {
-						fmt.Printf("%s [DRY-RUN] Simulated poweroff command.\n", now)
+						slog.Info("DRY-RUN", "action", "Simulated poweroff command")
 						idleStart = time.Now() // Reset to avoid log flooding
 					}
 				}

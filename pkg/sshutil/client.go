@@ -4,12 +4,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/kevinburke/ssh_config"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/term"
@@ -214,14 +214,44 @@ func (c *Client) RunTerminal(cmd string) error {
 	return nil
 }
 
-// Scp uploads a local file to remote destination using scp command
-func (c *Client) Scp(localPath, remotePath string) error {
-	// Note: using exec scp depends on system binary.
-	// Future improvement: implement pure-go scp or sftp to remove external dependency.
-	cmd := exec.Command("scp", localPath, fmt.Sprintf("%s:%s", c.Alias, remotePath))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("SCP failed: %v, Output: %s", err, string(output))
+// UploadFile uploads a local file to remote destination using SFTP
+func (c *Client) UploadFile(localPath, remotePath string) error {
+	if c.conn == nil {
+		if err := c.Connect(); err != nil {
+			return err
+		}
 	}
+
+	// Open local file
+	srcFile, err := os.Open(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to open local file: %v", err)
+	}
+	defer srcFile.Close()
+
+	// Create SFTP client
+	sftpClient, err := sftp.NewClient(c.conn)
+	if err != nil {
+		return fmt.Errorf("failed to create sftp client: %v", err)
+	}
+	defer sftpClient.Close()
+
+	// Create remote file
+	// Ensure parent directory exists? SFTP doesn't do mkdir -p automatically usually.
+	// For now assuming parent dir exists or we rely on error.
+	dstFile, err := sftpClient.Create(remotePath)
+	if err != nil {
+		return fmt.Errorf("failed to create remote file: %v", err)
+	}
+	defer dstFile.Close()
+
+	// Copy
+	if _, err := dstFile.ReadFrom(srcFile); err != nil {
+		return fmt.Errorf("failed to upload file: %v", err)
+	}
+
+	// Chmod to match local? Or default?
+	// Let's keep it simple for now.
 	return nil
 }
 

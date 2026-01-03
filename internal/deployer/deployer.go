@@ -7,6 +7,7 @@ import (
 	"autonfs/internal/templates"
 	"autonfs/pkg/sshutil"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -89,7 +90,7 @@ func NewDeployerWithDeps(client SSHClient, builder ArtifactBuilder, localExec Lo
 // RunDeploy executes the full deployment process
 func RunDeploy(opts Options) error {
 	// 1. Connect
-	fmt.Println(">> [1/5] Connecting and discovering environment...")
+	slog.Info("[1/5] Connecting and discovering environment...")
 	client, err := sshutil.NewClient(opts.SSHAlias)
 	if err != nil {
 		return err
@@ -123,12 +124,7 @@ func (d *Deployer) Apply(cfg *config.Config, opts ApplyOptions) error {
 
 // applyHost handles deployment for a single host
 func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
-	fmt.Printf(">> Deploying to Host: %s", host.Alias)
-	if opts.DryRun {
-		fmt.Printf(" [DRY-RUN]\n")
-	} else {
-		fmt.Printf("\n")
-	}
+	slog.Info("Deploying to Host", "alias", host.Alias, "dry_run", opts.DryRun)
 
 	// 1. Establish Connection (Reused logic)
 	// Apply logic creates new client per host if not injected.
@@ -149,15 +145,16 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 	}
 
 	// 2. Discovery
+
 	info, err := discover.Probe(client)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("   Remote: %s (%s, %s)\n", info.Hostname, info.IP, info.Arch)
+	slog.Info("Remote Info", "hostname", info.Hostname, "ip", info.IP, "arch", info.Arch)
 	localIP := getOutboundIP(info.IP)
 
 	// 3. Build Binary
-	fmt.Println("   Preparing autonfs binary...")
+	slog.Info("Preparing autonfs binary...")
 	tmpBin := filepath.Join(os.TempDir(), fmt.Sprintf("autonfs-bin-%s", info.Arch))
 	if err := d.builder.Build(info.Arch, "./cmd/autonfs", tmpBin); err != nil {
 		return fmt.Errorf("build failed: %v", err)
@@ -198,18 +195,19 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 	exportsContent, _ := templates.Render("exports", templates.ServerExportsTmpl, tmplCfg)
 
 	// 5. Upload & Install Server Components
+	// 5. Upload & Install Server Components
 	if opts.DryRun {
-		fmt.Println("   [DRY-RUN] Would upload binary to /usr/local/bin/autonfs")
-		fmt.Println("   [DRY-RUN] Would install systemd service: autonfs-watcher.service")
-		fmt.Println("   [DRY-RUN] Would configure NFS exports: /etc/exports.d/autonfs.exports")
-		fmt.Println("   [DRY-RUN] Would reload/restart remote services")
+		slog.Info("DRY-RUN: Upload binary", "path", "/usr/local/bin/autonfs")
+		slog.Info("DRY-RUN: Install service", "service", "autonfs-watcher.service")
+		slog.Info("DRY-RUN: Configure exports", "path", "/etc/exports.d/autonfs.exports")
+		slog.Info("DRY-RUN: Reload/Restart services")
 	} else {
 		// Checks
 		serviceChanged := remoteHasChange(client, "/etc/systemd/system/autonfs-watcher.service", serviceContent)
 		_ = remoteHasChange(client, "/etc/exports.d/autonfs.exports", exportsContent) // Check but ignore result for now
 
 		// Upload Binary (Always upload binary for now, or check checksum? Stick to always for simplicity/safety)
-		if err := client.Scp(tmpBin, "/tmp/autonfs"); err != nil {
+		if err := client.UploadFile(tmpBin, "/tmp/autonfs"); err != nil {
 			return fmt.Errorf("SCP binary failed: %v", err)
 		}
 		// Upload Service
@@ -236,7 +234,7 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		}
 
 		if serviceChanged {
-			fmt.Println("   [Remote] Watcher Service Changed -> Restarting")
+			slog.Info("Remote Watcher Service Changed -> Restarting")
 			installCmds = append(installCmds, "systemctl restart autonfs-watcher.service")
 		}
 
@@ -251,10 +249,10 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		}
 	}
 
-	fmt.Println("   Remote configured.")
+	slog.Info("Remote configured.")
 
 	// 6. Local Setup (Client Side)
-	fmt.Println("   Deploying Local Units...")
+	slog.Info("Deploying Local Units...")
 	anyHostChange := false
 
 	for _, m := range host.Mounts {
@@ -282,10 +280,11 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		unitChanged := false
 
 		// Check & Write Mount Unit
+		// Check & Write Mount Unit
 		if hasChange(d.localExec, mountFile, mountContent) {
-			fmt.Printf("   -> Updating %s\n", mountFile)
+			slog.Info("Updating Mount Unit", "file", mountFile)
 			if opts.DryRun {
-				fmt.Printf("      [DRY-RUN] Would write content to %s\n", mountFile)
+				slog.Info("DRY-RUN: Write content", "file", mountFile)
 			} else {
 				if err := localWrite(d.localExec, mountFile, mountContent); err != nil {
 					return err
@@ -296,10 +295,11 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		}
 
 		// Check & Write Automount Unit
+		// Check & Write Automount Unit
 		if hasChange(d.localExec, automountFile, automountContent) {
-			fmt.Printf("   -> Updating %s\n", automountFile)
+			slog.Info("Updating Automount Unit", "file", automountFile)
 			if opts.DryRun {
-				fmt.Printf("      [DRY-RUN] Would write content to %s\n", automountFile)
+				slog.Info("DRY-RUN: Write content", "file", automountFile)
 			} else {
 				if err := localWrite(d.localExec, automountFile, automountContent); err != nil {
 					return err
@@ -311,7 +311,7 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 
 		// Always ensure enabled
 		if opts.DryRun {
-			fmt.Printf("      [DRY-RUN] Would enable --now %s\n", fmt.Sprintf("%s.automount", unitName))
+			slog.Info("DRY-RUN: Enable --now", "unit", fmt.Sprintf("%s.automount", unitName))
 		} else {
 			if err := d.localExec.RunCommand("sudo", "systemctl", "enable", "--now", fmt.Sprintf("%s.automount", unitName)); err != nil {
 				return fmt.Errorf("failed to enable automount for %s: %v", m.Local, err)
@@ -321,7 +321,7 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		// Restart only if changed
 		if unitChanged {
 			if opts.DryRun {
-				fmt.Printf("      [DRY-RUN] Would restart %s\n", fmt.Sprintf("%s.automount", unitName))
+				slog.Info("DRY-RUN: Restart", "unit", fmt.Sprintf("%s.automount", unitName))
 			} else {
 				// Daemon reload for this unit change is needed before restart
 				d.localExec.RunCommand("sudo", "systemctl", "daemon-reload")
@@ -334,13 +334,13 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 
 	if anyHostChange {
 		if opts.DryRun {
-			fmt.Println("   [DRY-RUN] Would daemon-reload")
+			slog.Info("DRY-RUN: daemon-reload")
 		} else {
 			d.localExec.RunCommand("sudo", "systemctl", "daemon-reload")
 		}
 	}
 
-	fmt.Println("\n✅ Deployment Applied Successfully!")
+	slog.Info("Deployment Applied Successfully!")
 	return nil
 }
 
@@ -348,12 +348,12 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 func (d *Deployer) Run(opts Options) error {
 	// SUDO Check (Legacy)
 	if !opts.DryRun {
-		fmt.Println(">> [0/5] Checking local Sudo privileges...")
+		slog.Info("[0/5] Checking local Sudo privileges...")
 		if err := d.localExec.RunCommand("sudo", "-v"); err != nil {
-			fmt.Printf("Warning: Failed to obtain sudo privileges (%v). Subsequent operations may fail.\n", err)
+			slog.Warn("Failed to obtain sudo privileges. Subsequent operations may fail.", "error", err)
 		}
 	} else {
-		fmt.Println(">> [DryRun] Skipping sudo check.")
+		slog.Info("[DryRun] Skipping sudo check.")
 	}
 
 	// 4. Delegate to Apply logic
@@ -399,7 +399,7 @@ func writeToRemoteTmp(c SSHClient, content []byte, remotePath string) error {
 	}
 	tmpFile.Close()
 
-	return c.Scp(tmpPath, remotePath)
+	return c.UploadFile(tmpPath, remotePath)
 }
 
 // Helper: Write to local file (sudo)
@@ -461,16 +461,28 @@ func remoteHasChange(client SSHClient, path string, newContent []byte) bool {
 	return out != string(newContent)
 }
 
-// Helper: Convert path to systemd escaped string (e.g. /mnt/data -> mnt-data)
+// Helper: Convert path to systemd escaped string (pure Go implementation)
 func escapeSystemdPath(path string) string {
-	cmd := exec.Command("systemd-escape", "--path", path)
-	out, err := cmd.Output()
-	if err != nil {
-		// Fallback
-		path = strings.Trim(path, "/")
-		return strings.ReplaceAll(path, "/", "-")
+	// 1. Remove leading/trailing slashes
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return "-"
 	}
-	return strings.TrimSpace(string(out))
+
+	// 2. Replace '/' with '-'
+	// 3. Escape other characters if necessary (simplified for common paths)
+	var sb strings.Builder
+	for _, r := range path {
+		if r == '/' {
+			sb.WriteRune('-')
+		} else if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' {
+			sb.WriteRune(r)
+		} else {
+			// Escape others as \x<hex>
+			fmt.Fprintf(&sb, "\\x%02x", r)
+		}
+	}
+	return sb.String()
 }
 
 // RunUndeploy Execute undeploy, cleanup local and remote (optional)
@@ -479,29 +491,31 @@ func RunUndeploy(opts Options) error {
 	exec.Command("sudo", "-v").Run()
 
 	// === Local Cleanup ===
+
+	slog.Info("[Local] Removing AutoNFS local config", "path", opts.LocalDir)
+
 	unitName := escapeSystemdPath(opts.LocalDir)
 	automountUnit := fmt.Sprintf("%s.automount", unitName)
 	mountUnit := fmt.Sprintf("%s.mount", unitName)
-
-	fmt.Printf(">> [Local] Removing AutoNFS local config (%s)...\n", opts.LocalDir)
 
 	exec.Command("sudo", "systemctl", "disable", "--now", automountUnit).Run()
 	exec.Command("sudo", "systemctl", "stop", mountUnit).Run()
 	exec.Command("sudo", "systemctl", "disable", mountUnit).Run()
 
-	fmt.Println("   Removing unit files...")
+	slog.Info("Removing unit files...")
 	mountFile := fmt.Sprintf("/etc/systemd/system/%s", mountUnit)
 	automountFile := fmt.Sprintf("/etc/systemd/system/%s", automountUnit)
 
 	exec.Command("sudo", "rm", "-f", mountFile).Run()
 	exec.Command("sudo", "rm", "-f", automountFile).Run()
 
-	fmt.Println("   Reloading local systemd...")
+	slog.Info("Reloading local systemd...")
+	exec.Command("sudo", "systemctl", "daemon-reload").Run()
 	exec.Command("sudo", "systemctl", "daemon-reload").Run()
 
 	// === Remote Cleanup (Optional) ===
 	if opts.SSHAlias != "" {
-		fmt.Printf("\n>> [Remote] Cleaning up remote host (%s)...\n", opts.SSHAlias)
+		slog.Info("[Remote] Cleaning up remote host", "alias", opts.SSHAlias)
 
 		client, err := sshutil.NewClient(opts.SSHAlias)
 		if err != nil {
@@ -521,13 +535,13 @@ func RunUndeploy(opts Options) error {
 		}
 
 		fullCmd := fmt.Sprintf("sudo bash -c '%s'", strings.Join(cleanupCmds, " && "))
-		fmt.Println("   Executing remote cleanup commands...")
+		slog.Info("Executing remote cleanup commands...")
 		if err := client.RunTerminal(fullCmd); err != nil {
 			return fmt.Errorf("remote cleanup failed: %v", err)
 		}
-		fmt.Println("   Remote cleanup done.")
+		slog.Info("Remote cleanup done.")
 	}
 
-	fmt.Println("\n✅ Undeploy Completed!")
+	slog.Info("Undeploy Completed!")
 	return nil
 }

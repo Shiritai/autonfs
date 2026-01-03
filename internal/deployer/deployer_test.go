@@ -17,7 +17,7 @@ type MockSSHClient struct {
 	Connected     bool
 	Closed        bool
 	Cmds          []string
-	ScpCalls      []string
+	UploadCalls   []string
 	FailOnConnect bool
 	FailOnCmd     string // if cmd contains this string, return error
 	DiscoveryInfo string // return this for discovery command
@@ -44,8 +44,8 @@ func (m *MockSSHClient) RunTerminal(cmd string) error {
 	return nil
 }
 
-func (m *MockSSHClient) Scp(localPath, remotePath string) error {
-	m.ScpCalls = append(m.ScpCalls, fmt.Sprintf("%s -> %s", localPath, remotePath))
+func (m *MockSSHClient) UploadFile(localPath, remotePath string) error {
+	m.UploadCalls = append(m.UploadCalls, fmt.Sprintf("%s -> %s", localPath, remotePath))
 	return nil
 }
 
@@ -187,11 +187,11 @@ func TestDeployer_Apply_MultiHost(t *testing.T) {
 	}
 
 	// Verify we ran logic twice (roughly)
-	// Check SCP calls count. 3 files per host = 6 calls total.
+	// Check Upload calls count. 3 files per host = 6 calls total.
 	// Binary, Service, Exports.
-	expectedScp := 6
-	if len(mockClient.ScpCalls) != expectedScp {
-		t.Errorf("Expected %d SCP calls, got %d", expectedScp, len(mockClient.ScpCalls))
+	expectedUploads := 6
+	if len(mockClient.UploadCalls) != expectedUploads {
+		t.Errorf("Expected %d Upload calls, got %d", expectedUploads, len(mockClient.UploadCalls))
 	}
 
 	// Verify Local Mounts: 2 hosts * 1 mount = 2 local sets
@@ -352,9 +352,9 @@ func TestDeployer_Apply_DryRun(t *testing.T) {
 	}
 
 	// Verify NO mutating commands
-	// 1. No SCP calls
-	if len(mockClient.ScpCalls) > 0 {
-		t.Errorf("Expected 0 SCP calls in DryRun, got %d: %v", len(mockClient.ScpCalls), mockClient.ScpCalls)
+	// 1. No Upload calls
+	if len(mockClient.UploadCalls) > 0 {
+		t.Errorf("Expected 0 Upload calls in DryRun, got %d: %v", len(mockClient.UploadCalls), mockClient.UploadCalls)
 	}
 
 	// 2. No Local Writes (mv)

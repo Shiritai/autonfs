@@ -7,6 +7,7 @@ import (
 	"autonfs/pkg/sshutil"
 	"autonfs/pkg/wol"
 	"fmt"
+	"log/slog"
 	"os"
 	"time"
 
@@ -14,7 +15,21 @@ import (
 )
 
 func main() {
-	var rootCmd = &cobra.Command{Use: "autonfs"}
+	var verbose bool
+	var rootCmd = &cobra.Command{
+		Use: "autonfs",
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			level := slog.LevelInfo
+			if verbose {
+				level = slog.LevelDebug
+			}
+			logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+				Level: level,
+			}))
+			slog.SetDefault(logger)
+		},
+	}
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
 
 	// --- Debug Command (Phase 1 & 2) ---
 	var debugCmd = &cobra.Command{
@@ -23,19 +38,19 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			alias := args[0]
-			fmt.Printf("1. Parsing config: %s ...\n", alias)
+			slog.Info("1. Parsing config", "alias", alias)
 
 			client, err := sshutil.NewClient(alias)
 			if err != nil {
-				fmt.Printf("Error: %v\n", err)
+				slog.Error("Failed to create SSH client", "error", err)
 				os.Exit(1)
 			}
-			fmt.Printf("   -> Target Host: %s, User: %s\n", client.Host, client.User)
+			slog.Info("Target Host Info", "host", client.Host, "user", client.User)
 
-			fmt.Println("2. Performing Remote Discovery...")
+			slog.Info("2. Performing Remote Discovery...")
 			info, err := discover.Probe(client)
 			if err != nil {
-				fmt.Printf("   -> Discovery failed: %v\n", err)
+				slog.Error("Discovery failed", "error", err)
 				os.Exit(1)
 			}
 
@@ -46,7 +61,7 @@ func main() {
 			fmt.Printf("IPv4        : %s (For NFS Mount)\n", info.IP)
 			fmt.Printf("MAC Address : %s (For WoL Wake)\n", info.MAC)
 			fmt.Println("------------------------------------------------")
-			fmt.Println("Discovery successful! Sufficient data for configuration.")
+			slog.Info("Discovery successful! Sufficient data for configuration.")
 		},
 	}
 
@@ -62,28 +77,28 @@ func main() {
 		Use:   "wake",
 		Short: "Send WoL packet and wait for port open",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("Waking MAC: %s ...\n", wakeMac)
+			slog.Info("Waking MAC", "mac", wakeMac)
 
 			// 1. Send WoL
 			packet, err := wol.NewMagicPacket(wakeMac)
 			if err != nil {
-				fmt.Printf("Invalid MAC format: %v\n", err)
+				slog.Error("Invalid MAC format", "error", err)
 				os.Exit(1)
 			}
 			// Simple broadcast address assumption, refined in Phase 4
 			if err := packet.Send(wakeBcast); err != nil {
-				fmt.Printf("WoL send failed: %v\n", err)
+				slog.Warn("WoL send failed", "error", err)
 			} else {
-				fmt.Println("WoL packet sent.")
+				slog.Info("WoL packet sent")
 			}
 
 			// 2. Wait for Port
-			fmt.Printf("Waiting for host %s:%d to come online (Timeout: %v)...\n", wakeIP, wakePort, wakeTimeout)
+			slog.Info("Waiting for host to come online", "ip", wakeIP, "port", wakePort, "timeout", wakeTimeout)
 			if err := wol.WaitForPort(wakeIP, wakePort, wakeTimeout); err != nil {
-				fmt.Printf("Wake timeout or failed: %v\n", err)
+				slog.Error("Wake timeout or failed", "error", err)
 				os.Exit(1)
 			}
-			fmt.Println("Host is online!")
+			slog.Info("Host is online!")
 		},
 	}
 	wakeCmd.Flags().StringVar(&wakeMac, "mac", "", "MAC Address")
@@ -114,7 +129,7 @@ func main() {
 
 			// Blocking call
 			if err := m.Watch(cmd.Context(), cfg); err != nil {
-				fmt.Printf("Monitor terminated abnormally: %v\n", err)
+				slog.Error("Monitor terminated abnormally", "error", err)
 				os.Exit(1)
 			}
 		},
@@ -139,7 +154,7 @@ func main() {
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			if deployLocal == "" || deployRemote == "" {
-				fmt.Println("Error: --local-dir and --remote-dir are required")
+				slog.Error("--local-dir and --remote-dir are required")
 				cmd.Usage()
 				os.Exit(1)
 			}
@@ -155,7 +170,7 @@ func main() {
 			}
 
 			if err := deployer.RunDeploy(opts); err != nil {
-				fmt.Printf("Deploy failed: %v\n", err)
+				slog.Error("Deploy failed", "error", err)
 				os.Exit(1)
 			}
 		},
@@ -183,7 +198,7 @@ func main() {
 				SSHAlias: sshAlias,
 			}
 			if err := deployer.RunUndeploy(opts); err != nil {
-				fmt.Printf("Undeploy failed: %v\n", err)
+				slog.Error("Undeploy failed", "error", err)
 				os.Exit(1)
 			}
 		},
@@ -207,7 +222,7 @@ func main() {
 				WatcherDryRun: applyWatcherDry,
 			}
 			if err := RunApply(opts); err != nil {
-				fmt.Printf("Apply failed: %v\n", err)
+				slog.Error("Apply failed", "error", err)
 				os.Exit(1)
 			}
 		},
