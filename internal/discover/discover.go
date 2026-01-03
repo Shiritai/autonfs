@@ -46,9 +46,36 @@ func Probe(client SSHClient) (*ServerInfo, error) {
 	// 4. cat /sys/class/net/...: Read MAC Address directly, safer than parsing ifconfig
 	// Output format: "interface_name|ip_address|mac_address"
 	cmd := `
-	iface=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}');
-	ip=$(ip -4 addr show $iface | awk '/inet/ {print $2}' | cut -d/ -f1 | head -n1);
-	mac=$(cat /sys/class/net/$iface/address);
+	# Find default interface
+	iface=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')
+	if [ -z "$iface" ]; then
+		# Fallback: check default route
+		iface=$(ip route show default 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')
+	fi
+	
+	# Fallback 2: First non-loopback interface
+	if [ -z "$iface" ]; then
+		iface=$(ls /sys/class/net/ | grep -v lo | head -n1)
+	fi
+
+	if [ -z "$iface" ]; then
+		echo "error|no_interface_found|00:00:00:00:00:00"
+		exit 1
+	fi
+
+	# Get IP (IPv4)
+	ip=$(ip -4 addr show $iface 2>/dev/null | awk '/inet/ {print $2}' | cut -d/ -f1 | head -n1)
+	if [ -z "$ip" ]; then
+		ip="0.0.0.0"
+	fi
+
+	# Get MAC
+	if [ -f "/sys/class/net/$iface/address" ]; then
+		mac=$(cat /sys/class/net/$iface/address)
+	else
+		mac="00:00:00:00:00:00"
+	fi
+
 	echo "$iface|$ip|$mac"
 	`
 
