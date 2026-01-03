@@ -2,7 +2,6 @@ package sshutil
 
 import (
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -105,7 +104,7 @@ func (c *Client) Connect() error {
 	}
 
 	for _, kPath := range keyFiles {
-		key, err := ioutil.ReadFile(kPath)
+		key, err := os.ReadFile(kPath)
 		if err == nil {
 			signer, err := ssh.ParsePrivateKey(key)
 			if err == nil {
