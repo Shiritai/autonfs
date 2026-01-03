@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -12,12 +12,35 @@ import (
 	"time"
 )
 
+// OSOperator defines interface for OS interactions
+type OSOperator interface {
+	ReadFile(name string) ([]byte, error)
+	ReadDir(name string) ([]os.DirEntry, error)
+	RunCommand(name string, arg ...string) error
+}
+
+// RealOSOperator implements OSOperator using real OS calls
+type RealOSOperator struct{}
+
+func (o *RealOSOperator) ReadFile(name string) ([]byte, error) {
+	return os.ReadFile(name)
+}
+
+func (o *RealOSOperator) ReadDir(name string) ([]os.DirEntry, error) {
+	return os.ReadDir(name)
+}
+
+func (o *RealOSOperator) RunCommand(name string, arg ...string) error {
+	return exec.Command(name, arg...).Run()
+}
+
 // Monitor responsible for system state monitoring
 type Monitor struct {
 	ProcLoadAvg  string
 	ProcRPC      string
 	ProcNFSv4    string // /proc/fs/nfsd/clients/
 	ShutdownFunc func() error
+	OS           OSOperator
 }
 
 // WatchConfig monitor configuration
@@ -29,16 +52,20 @@ type WatchConfig struct {
 }
 
 // NewMonitor creates a new metrics monitor
-func NewMonitor() *Monitor {
-	return &Monitor{
+func NewMonitor(osOp OSOperator) *Monitor {
+	if osOp == nil {
+		osOp = &RealOSOperator{}
+	}
+	m := &Monitor{
 		ProcLoadAvg: "/proc/loadavg",
 		ProcRPC:     "/proc/net/rpc/nfsd",
 		ProcNFSv4:   "/proc/fs/nfsd/clients",
-		ShutdownFunc: func() error {
-			cmd := exec.Command("systemctl", "poweroff")
-			return cmd.Run()
-		},
+		OS:          osOp,
 	}
+	m.ShutdownFunc = func() error {
+		return m.OS.RunCommand("systemctl", "poweroff")
+	}
+	return m
 }
 
 // Watch starts the monitoring loop (Blocking)
@@ -153,7 +180,7 @@ func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 
 // checkLoad checks system load
 func (m *Monitor) checkLoad(threshold float64) (bool, float64, error) {
-	data, err := ioutil.ReadFile(m.ProcLoadAvg)
+	data, err := m.OS.ReadFile(m.ProcLoadAvg)
 	if err != nil {
 		return false, 0, err
 	}
@@ -170,7 +197,7 @@ func (m *Monitor) checkLoad(threshold float64) (bool, float64, error) {
 
 // getNFSv4Clients returns list of IP addresses of connected v4 clients
 func (m *Monitor) getNFSv4Clients() ([]string, error) {
-	files, err := ioutil.ReadDir(m.ProcNFSv4)
+	files, err := m.OS.ReadDir(m.ProcNFSv4)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +209,7 @@ func (m *Monitor) getNFSv4Clients() ([]string, error) {
 		}
 
 		infoPath := filepath.Join(m.ProcNFSv4, f.Name(), "info")
-		content, err := ioutil.ReadFile(infoPath)
+		content, err := m.OS.ReadFile(infoPath)
 		if err != nil {
 			continue
 		}
@@ -194,7 +221,7 @@ func (m *Monitor) getNFSv4Clients() ([]string, error) {
 				parts := strings.Split(line, "\"")
 				if len(parts) >= 2 {
 					ipPort := parts[1]
-					if host, _, err := strings.Cut(ipPort, ":"); host != "" && err {
+					if host, _, found := strings.Cut(ipPort, ":"); host != "" && found {
 						clientIPs = append(clientIPs, host)
 					} else {
 						clientIPs = append(clientIPs, ipPort)
@@ -208,7 +235,7 @@ func (m *Monitor) getNFSv4Clients() ([]string, error) {
 
 // getNFSProcCount reads total operations from /proc/net/rpc/nfsd
 func (m *Monitor) getNFSProcCount() (uint64, error) {
-	data, err := ioutil.ReadFile(m.ProcRPC)
+	data, err := m.OS.ReadFile(m.ProcRPC)
 	if err != nil {
 		return 0, err
 	}

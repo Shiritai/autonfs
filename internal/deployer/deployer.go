@@ -7,7 +7,6 @@ import (
 	"autonfs/internal/templates"
 	"autonfs/pkg/sshutil"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -59,7 +58,7 @@ func (e *defaultLocalExecutor) RunCommand(name string, args ...string) error {
 }
 
 func (e *defaultLocalExecutor) ReadFile(path string) ([]byte, error) {
-	return ioutil.ReadFile(path)
+	return os.ReadFile(path)
 }
 
 // Deployer handles deployment logic, supports dependency injection
@@ -186,6 +185,7 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		LoadThreshold: "0.5", // Default? Add to YAML?
 		Exports:       exports,
 		WatcherDryRun: opts.WatcherDryRun, // Pass Watcher Dry Run flag
+		ShutdownCmd:   host.ShutdownCmd,
 	}
 	if tmplCfg.IdleTimeout == "" {
 		tmplCfg.IdleTimeout = "5m"
@@ -260,12 +260,13 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 	for _, m := range host.Mounts {
 		unitName := escapeSystemdPath(m.Local)
 		mountTmplCfg := templates.Config{
-			ServerIP:    info.IP,
-			RemoteDir:   m.Remote,
-			LocalDir:    m.Local,
-			MacAddr:     info.MAC,
-			BinaryPath:  "/usr/local/bin/autonfs",
-			IdleTimeout: host.IdleTimeout,
+			ServerIP:     info.IP,
+			RemoteDir:    m.Remote,
+			LocalDir:     m.Local,
+			MacAddr:      info.MAC,
+			BinaryPath:   "/usr/local/bin/autonfs",
+			IdleTimeout:  host.IdleTimeout,
+			MountOptions: m.Options,
 		}
 
 		// Lookup executable logic
@@ -385,7 +386,7 @@ var RunByTest = false // Helper for testing
 
 // Helper: Write content to remote temp file (no sudo)
 func writeToRemoteTmp(c SSHClient, content []byte, remotePath string) error {
-	tmpFile, err := ioutil.TempFile("", "deploy_config_*_"+filepath.Base(remotePath))
+	tmpFile, err := os.CreateTemp("", "deploy_config_*_"+filepath.Base(remotePath))
 	if err != nil {
 		return err
 	}
@@ -403,7 +404,7 @@ func writeToRemoteTmp(c SSHClient, content []byte, remotePath string) error {
 
 // Helper: Write to local file (sudo)
 func localWrite(executor LocalExecutor, path string, content []byte) error {
-	tmpFile, err := ioutil.TempFile("", "local_write_*")
+	tmpFile, err := os.CreateTemp("", "local_write_*")
 	if err != nil {
 		return err
 	}
