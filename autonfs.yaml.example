@@ -11,7 +11,7 @@ hosts:
   # ==========================================
   # Example 1: Standard NAS Setup
   # ==========================================
-  - alias: "high-power-nas"   # SSH Alias (must match ~/.ssh/config) or Hostname
+  - alias: "my-nas"   # SSH Alias (must match ~/.ssh/config) or Hostname
     
     # [Power Management]
     # idle_timeout: How long to monitor for inactivity before shutting down the server.

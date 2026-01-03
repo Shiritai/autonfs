@@ -42,7 +42,7 @@ go build -o autonfs ./cmd/autonfs
 
 ```yaml
 hosts:
-  - alias: "high-power-nas"   # SSH 設定別名 (SSH Configuration Alias)
+  - alias: "my-nas"   # SSH 設定別名 (SSH Configuration Alias)
     idle_timeout: "30m"       # 閒置 30 分鐘後關機
     wake_timeout: "120s"      # 等待開機最大時間 120 秒
     mounts:
@@ -70,7 +70,7 @@ hosts:
 若要移除所有設定與服務：
 
 ```bash
-./autonfs undeploy --local-dir /mnt/archive --remote high-power-nas
+./autonfs undeploy --local-dir /mnt/archive --remote my-nas
 ```
 
 ---

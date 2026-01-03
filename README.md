@@ -42,7 +42,7 @@ Create a `autonfs.yaml` file to define your setup:
 
 ```yaml
 hosts:
-  - alias: "high-power-nas"   # SSH Configuration Alias
+  - alias: "my-nas"   # SSH Configuration Alias
     idle_timeout: "30m"       # Shutdown after 30m inactivity
     wake_timeout: "120s"      # Wait max 120s for boot
     mounts:
@@ -70,7 +70,7 @@ hosts:
 To remove all configurations and services:
 
 ```bash
-./autonfs undeploy --local-dir /mnt/archive --remote high-power-nas
+./autonfs undeploy --local-dir /mnt/archive --remote my-nas
 ```
 
 ---
