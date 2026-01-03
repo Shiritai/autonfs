@@ -7,12 +7,12 @@ import (
 	"runtime"
 )
 
-// BuildForArch 交叉編譯
-// remoteArch: 目標架構 (e.g. x86_64, aarch64)
-// source: 原始碼目錄 (e.g. "./cmd/autonfs")
-// output: 輸出檔案路徑
+// BuildForArch Cross-compilation
+// remoteArch: Target architecture (e.g. x86_64, aarch64)
+// source: Source directory (e.g. "./cmd/autonfs")
+// output: Output file path
 func BuildForArch(remoteArch, source, output string) error {
-	// 1. 對應 uname -m 到 Go 的 GOARCH
+	// 1. Map uname -m to Go's GOARCH
 	goArch := remoteArch
 	switch remoteArch {
 	case "x86_64":
@@ -23,8 +23,8 @@ func BuildForArch(remoteArch, source, output string) error {
 		goArch = "arm"
 	}
 
-	fmt.Printf("正在編譯 Target: GOOS=linux GOARCH=%s Src=%s -> %s\n", goArch, source, output)
-	
+	fmt.Printf("Compiling Target: GOOS=linux GOARCH=%s Src=%s -> %s\n", goArch, source, output)
+
 	cmd := exec.Command("go", "build", "-o", output, source)
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+goArch, "CGO_ENABLED=0") // Pure Go!
 	cmd.Stdout = os.Stdout
@@ -33,12 +33,12 @@ func BuildForArch(remoteArch, source, output string) error {
 	return cmd.Run()
 }
 
-// LocalBinaryPath 回傳當前執行檔的路徑，用於複製自身 (如果架構相同)
+// LocalBinaryPath returns the path of the current executable, used for self-replication (if architecture matches)
 func LocalBinaryPath() (string, error) {
 	return os.Executable()
 }
 
-// IsSameArch 檢查遠端架構是否與本機相同
+// IsSameArch checks if the remote architecture matches the local one
 func IsSameArch(remoteArch string) bool {
 	localArch := runtime.GOARCH
 	convertedRemote := remoteArch

@@ -104,7 +104,7 @@ func main() {
 		Use:   "watch",
 		Short: "Monitor NFS connections and system load",
 		Run: func(cmd *cobra.Command, args []string) {
-			m := watcher.NewMonitor()
+			m := watcher.NewMonitor(nil)
 			cfg := watcher.WatchConfig{
 				IdleTimeout:   watchIdle,
 				LoadThreshold: watchLoad,
@@ -138,6 +138,12 @@ func main() {
 		Short: "Deploy AutoNFS to local and remote",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
+			if deployLocal == "" || deployRemote == "" {
+				fmt.Println("Error: --local-dir and --remote-dir are required")
+				cmd.Usage()
+				os.Exit(1)
+			}
+
 			opts := deployer.Options{
 				SSHAlias:      args[0],
 				LocalDir:      deployLocal,
@@ -154,8 +160,8 @@ func main() {
 			}
 		},
 	}
-	deployCmd.Flags().StringVar(&deployLocal, "local-dir", "/mnt/remote_data", "Local mount point")
-	deployCmd.Flags().StringVar(&deployRemote, "remote-dir", "/mnt/hdd8tb", "Remote directory")
+	deployCmd.Flags().StringVar(&deployLocal, "local-dir", "", "Local mount point (Required)")
+	deployCmd.Flags().StringVar(&deployRemote, "remote-dir", "", "Remote directory (Required)")
 	deployCmd.Flags().StringVar(&deployIdle, "idle", "30m", "Idle shutdown time")
 	deployCmd.Flags().StringVar(&deployLoad, "load", "0.5", "Load threshold")
 	deployCmd.Flags().BoolVar(&deployDry, "dry-run", false, "Preview only")

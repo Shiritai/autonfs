@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// ServerInfo 封裝遠端主機的關鍵資訊
+// ServerInfo encapsulates key information about the remote host
 type ServerInfo struct {
 	Hostname string
 	Arch     string
@@ -20,31 +20,31 @@ type SSHClient interface {
 	RunCommand(cmd string) (string, error)
 }
 
-// Probe 執行遠端偵測並回傳資訊
+// Probe executes remote detection and returns information
 func Probe(client SSHClient) (*ServerInfo, error) {
 	info := &ServerInfo{}
 
-	// 1. 取得 Hostname
+	// 1. Get Hostname
 	host, err := client.RunCommand("uname -n")
 	if err != nil {
-		return nil, fmt.Errorf("取得 hostname 失敗: %v", err)
+		return nil, fmt.Errorf("failed to get hostname: %v", err)
 	}
 	info.Hostname = host
 
-	// 2. 取得 Architecture
+	// 2. Get Architecture
 	arch, err := client.RunCommand("uname -m")
 	if err != nil {
-		return nil, fmt.Errorf("取得架構失敗: %v", err)
+		return nil, fmt.Errorf("failed to get architecture: %v", err)
 	}
 	info.Arch = arch
 
-	// 3. 網路探索 (關鍵邏輯)
-	// 原理：
-	// 1. ip route get 1.1.1.1: 找出通往外網(預設閘道)的介面
-	// 2. awk 提取介面名稱 (dev 之後的欄位)
-	// 3. ip -4 addr show: 顯示該介面的 IPv4 資訊
-	// 4. cat /sys/class/net/...: 直接讀取 MAC Address 檔案，比解析 ifconfig 安全
-	// 輸出格式: "interface_name|ip_address|mac_address"
+	// 3. Network Discovery (Critical Logic)
+	// Principle:
+	// 1. ip route get 1.1.1.1: Find interface to external network (default gateway)
+	// 2. awk extract interface name (field after dev)
+	// 3. ip -4 addr show: Show IPv4 info for that interface
+	// 4. cat /sys/class/net/...: Read MAC Address directly, safer than parsing ifconfig
+	// Output format: "interface_name|ip_address|mac_address"
 	cmd := `
 	iface=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}');
 	ip=$(ip -4 addr show $iface | awk '/inet/ {print $2}' | cut -d/ -f1 | head -n1);
@@ -54,7 +54,7 @@ func Probe(client SSHClient) (*ServerInfo, error) {
 
 	netOut, err := client.RunCommand(cmd)
 	if err != nil {
-		return nil, fmt.Errorf("網路探索失敗: %v", err)
+		return nil, fmt.Errorf("network discovery failed: %v", err)
 	}
 
 	iface, ip, mac, err := parseNetworkInfo(netOut)
@@ -69,11 +69,11 @@ func Probe(client SSHClient) (*ServerInfo, error) {
 	return info, nil
 }
 
-// parseNetworkInfo 解析 "iface|ip|mac" 格式的字串
+// parseNetworkInfo parses string in "iface|ip|mac" format
 func parseNetworkInfo(raw string) (string, string, string, error) {
 	parts := strings.Split(strings.TrimSpace(raw), "|")
 	if len(parts) != 3 {
-		return "", "", "", fmt.Errorf("網路資訊格式錯誤，預期 3 個欄位，收到: %s", raw)
+		return "", "", "", fmt.Errorf("invalid network info format, expected 3 fields, got: %s", raw)
 	}
 	return parts[0], parts[1], parts[2], nil
 }
