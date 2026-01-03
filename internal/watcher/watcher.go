@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Monitor 負責系統狀態監控
+// Monitor responsible for system state monitoring
 type Monitor struct {
 	ProcLoadAvg  string
 	ProcRPC      string
@@ -20,15 +20,15 @@ type Monitor struct {
 	ShutdownFunc func() error
 }
 
-// WatchConfig 監控配置
+// WatchConfig monitor configuration
 type WatchConfig struct {
 	IdleTimeout   time.Duration
 	LoadThreshold float64
-	PollInterval  time.Duration // 檢查間隔，預設 10s
+	PollInterval  time.Duration // Check interval, default 10s
 	DryRun        bool
 }
 
-// NewMonitor 建立監控器
+// NewMonitor creates a new metrics monitor
 func NewMonitor() *Monitor {
 	return &Monitor{
 		ProcLoadAvg: "/proc/loadavg",
@@ -41,7 +41,7 @@ func NewMonitor() *Monitor {
 	}
 }
 
-// Watch 啟動監控迴圈 (Blocking)
+// Watch starts the monitoring loop (Blocking)
 func (m *Monitor) Watch(ctx context.Context, cfg WatchConfig) error {
 	interval := cfg.PollInterval
 	if interval == 0 {
