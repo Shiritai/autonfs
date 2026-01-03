@@ -15,6 +15,9 @@ func TestRender(t *testing.T) {
 		BinaryPath:    "/usr/bin/autonfs",
 		IdleTimeout:   "10m",
 		LoadThreshold: "0.8",
+		Exports: []ExportInfo{
+			{Path: "/data", ClientIP: "192.168.1.100"},
+		},
 	}
 
 	tests := []struct {

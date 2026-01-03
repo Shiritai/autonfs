@@ -18,12 +18,14 @@ type HostConfig struct {
 	Mounts      []MountConfig `yaml:"mounts"`       // List of mounts
 	IdleTimeout string        `yaml:"idle_timeout"` // Default idle timeout for this host (e.g., "5m")
 	WakeTimeout string        `yaml:"wake_timeout"` // Timeout for WoL/Wake (e.g., "120s")
+	ShutdownCmd string        `yaml:"shutdown_cmd"` // Custom shutdown command
 }
 
 // MountConfig defines a single directory mapping
 type MountConfig struct {
-	Local  string `yaml:"local"`  // Local mount point
-	Remote string `yaml:"remote"` // Remote export path
+	Local   string `yaml:"local"`   // Local mount point
+	Remote  string `yaml:"remote"`  // Remote export path
+	Options string `yaml:"options"` // Mount options (e.g. "rw,soft,timeo=100")
 }
 
 // ParseConfig parses YAML content into a Config struct

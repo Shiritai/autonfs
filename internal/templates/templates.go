@@ -19,7 +19,7 @@ After=network.target
 What={{.ServerIP}}:{{.RemoteDir}}
 Where={{.LocalDir}}
 Type=nfs
-Options=rw,soft,timeo=100,retrans=3,actimeo=60
+Options={{.MountOptions}}
 # Critical: Wake up host before mount, set 10s timeout to avoid blocking indefinitely
 ExecStartPre={{.BinaryPath}} wake --mac "{{.MacAddr}}" --ip "{{.ServerIP}}" --port 2049 --timeout 10s
 `
@@ -44,7 +44,7 @@ After=network.target nfs-server.service
 
 [Service]
 Type=simple
-ExecStart={{.BinaryPath}} watch --timeout {{.IdleTimeout}} --load {{.LoadThreshold}}{{if .WatcherDryRun}} --dry-run{{end}}
+ExecStart={{.BinaryPath}} watch --timeout {{.IdleTimeout}} --load {{.LoadThreshold}}{{if .WatcherDryRun}} --dry-run{{end}}{{if .ShutdownCmd}} --shutdown-cmd "{{.ShutdownCmd}}"{{end}}
 Restart=always
 RestartSec=10
 
@@ -74,6 +74,8 @@ type Config struct {
 	WakeTimeout   string
 	LoadThreshold string
 	WatcherDryRun bool
+	ShutdownCmd   string       // New field
+	MountOptions  string       // New field
 	Exports       []ExportInfo // New field for multi-export
 }
 
