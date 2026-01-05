@@ -14,6 +14,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	Version = "dev"
+	Commit  = "none"
+)
+
 func main() {
 	var verbose bool
 	var rootCmd = &cobra.Command{
@@ -30,6 +35,15 @@ func main() {
 		},
 	}
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose logging")
+
+	// --- Version Command ---
+	var versionCmd = &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("AutoNFS %s (%s)\n", Version, Commit)
+		},
+	}
 
 	// --- Debug Command (Phase 1 & 2) ---
 	var debugCmd = &cobra.Command{
@@ -231,7 +245,7 @@ func main() {
 	applyCmd.Flags().BoolVarP(&applyDryRun, "dry-run", "n", false, "dry-run (no write)")
 	applyCmd.Flags().BoolVar(&applyWatcherDry, "watcher-dry-run", false, "Deploy watcher in dry-run mode")
 
-	rootCmd.AddCommand(debugCmd, wakeCmd, watchCmd, deployCmd, undeployCmd, applyCmd)
+	rootCmd.AddCommand(versionCmd, debugCmd, wakeCmd, watchCmd, deployCmd, undeployCmd, applyCmd)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
