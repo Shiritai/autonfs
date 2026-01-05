@@ -1,0 +1,51 @@
+version: 2
+
+project_name: autonfs
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # Ignore darwin/amd64 if not needed, or keep for compatibility
+    ignore:
+      - goos: darwin
+        goarch: amd64
+    ldflags:
+      - -s -w -X main.Version={{.Version}} -X main.Commit={{.Commit}}
+
+archives:
+  - format: tar.gz
+    # Use a friendly name template
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    # Wrap binaries in a folder? Usually 'none' or 'binary' for single binaries, 
+    # or default (folder) if you have README/LICENSE included.
+    wrap_in_directory: true
+    files:
+      - README.md
+      - README_zh-TW.md
+      - LICENSE
+      - autonfs.yaml.example
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
