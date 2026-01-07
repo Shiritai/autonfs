@@ -1,6 +1,8 @@
 # AutoNFS
 
-> **智慧型按需 NFS 掛載管理器** (Intelligent On-Demand NFS Mount Manager) - 專為 Home Labs 與節能設計。
+[English Version](README.md)
+
+> **智慧型按需 NFS 掛載管理器** - 專為 Home Labs 與節能設計。
 > 存取時喚醒 (Wake-on-LAN)。閒置時自動關機。零配置。
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
@@ -15,42 +17,48 @@
 
 ---
 
-## 🔥 特色 (Features)
+## 🔥 特色
 
-*   **⚡️ 零配置部署 (Zero-Config Deployment)**:
+*   **⚡️ 零配置部署**:
     忘記編輯 `/etc/auto.master`、`/etc/exports` 或撰寫自訂 systemd 服務檔吧。`autonfs apply` 透過 SSH 在幾秒鐘內部署一切 (Client Units, Server Watcher, NFS Exports)。
-*   **🧠 核心級精準度 (Kernel-Level Accuracy)**:
+*   **🧠 核心級精準度**:
     不同於依賴 TCP ping 或一般系統負載的腳本，AutoNFS 的 Watcher 直接檢查 Linux Kernel NFSd 狀態。它確切知道 Client 何時連線。
-*   **🛡️ 原子性與聲明式 (Atomic & Declarative)**:
+*   **🛡️ 原子性與聲明式**:
     在 `autonfs.yaml` 中定義您的基礎設施。部署過程具備冪等性 (Idempotent) 與自我修復能力 (Self-Healing)。
 
 ---
 
-## 🚀 快速開始 (Quick Start)
+## 🚀 快速開始
 
-### 1. 安裝 (Installation)
+### 1. 安裝
 
+#### 方式 A: 下載二進位檔 (推薦)
+前往 [GitHub Releases](https://github.com/archroiko/autonfs/releases) 下載適用於您平台的最新版本 (`v0.0.1+`)。
+
+#### 方式 B: 從原始碼編譯
 需要 Go 1.20+ 環境：
 
 ```bash
-go build -o autonfs ./cmd/autonfs
+go build -ldflags="-s -w" -o autonfs ./cmd/autonfs
 ```
 
-### 2. 設定 (Configuration) (`autonfs.yaml`)
+### 2. 設定 (`autonfs.yaml`)
 
 建立 `autonfs.yaml` 檔案來定義您的設定：
 
 ```yaml
 hosts:
-  - alias: "my-nas"   # SSH 設定別名 (SSH Configuration Alias)
+  - alias: "my-nas"   # SSH 設定別名
     idle_timeout: "30m"       # 閒置 30 分鐘後關機
     wake_timeout: "120s"      # 等待開機最大時間 120 秒
+    shutdown_cmd: "systemctl poweroff" # 自訂關機指令 (選填)
     mounts:
       - local: "/mnt/archive"
         remote: "/volume1/archive"
+        mount_options: "rw,soft,timeo=100" # 自訂掛載參數 (選填)
 ```
 
-### 3. 部署 (Deploy)
+### 3. 部署
 
 **模擬執行 (Dry Run)** (預覽變更):
 ```bash
@@ -62,10 +70,10 @@ hosts:
 ./autonfs apply -f autonfs.yaml
 ```
 
-*   **冪等性 (Idempotency)**: 可安全地重複執行。它只會更新有變更的單元。
-*   **自我修復 (Self-Healing)**: 自動確保服務已啟用並執行中。
+*   **冪等性**: 可安全地重複執行。它只會更新有變更的單元。
+*   **自我修復**: 自動確保服務已啟用並執行中。
 
-### 4. 反部署 (Undeploy)
+### 4. 反部署
 
 若要移除所有設定與服務：
 
@@ -73,11 +81,18 @@ hosts:
 ./autonfs undeploy --local-dir /mnt/archive --remote my-nas
 ```
 
+### 5. 查看版本
+
+```bash
+./autonfs version
+# Output: AutoNFS v0.0.1 (b7c96f1)
+```
+
 ---
 
-## 🛠️ 架構 (Architecture)
+## 🛠️ 架構
 
-### 運作流程 (Workflow)
+### 運作流程
 
 ```mermaid
 sequenceDiagram
@@ -108,7 +123,7 @@ sequenceDiagram
     Note over S: Watcher: Poweroff
 ```
 
-### Watcher 狀態機 (Watcher State Machine)
+### Watcher 狀態機
 
 Watcher 作為 systemd 服務在遠端 Server 上執行。
 
@@ -127,18 +142,18 @@ stateDiagram-v2
 
 ---
 
-## 🧩 整合 (Integrations)
+## 🧩 整合
 
-*   **Nextcloud in Docker**: 使用 AutoNFS 為 Nextcloud 提供按需掛載的「冷儲存」。詳情請參閱 [Nextcloud 整合指南](docs/integration_nextcloud.md)。
+*   **Nextcloud in Docker**: 使用 AutoNFS 為 Nextcloud 提供按需掛載的「冷儲存」。詳情請參閱 [Nextcloud 整合指南](docs/integration_nextcloud_zh-TW.md)。
 
-## 📜 授權 (License)
+## 📜 授權
 
 本專案採用 **GNU Affero General Public License v3.0 (AGPLv3)** 授權。
 詳細內容請參閱 [LICENSE](LICENSE) 檔案。
 
 ---
 
-## ⚠️ 常見問題 (Troubleshooting)
+## ⚠️ 常見問題
 
 ### Q: 為什麼 Master 沒有自動 Unmount？
 **A:** 請檢查您是否還停留在掛載目錄內 (例如 shell `cd /mnt/nas`)。請執行 `cd ~` 離開該目錄，否則掛載點會被佔用導致無法卸載。

@@ -1,6 +1,8 @@
-# AutoNFS 與 Nextcloud in Docker 整合指南
+# AutoNFS Integration Guide: Nextcloud in Docker
 
-本指南說明如何將 **AutoNFS** 應用於 **Nextcloud (Docker)** 環境，實現「冷儲存資料的自動喚醒與熱拔插」，並解決 Docker 整合中的常見問題。
+[中文版 (Chinese Version)](integration_nextcloud_zh-TW.md)
+
+This guide explains how to integrate **AutoNFS** with **Nextcloud (Docker)** to achieve "Wake-on-Demand Cold Storage" and solve common Docker integration issues.
 
 ## 1. 架構核心 (Architecture)
 

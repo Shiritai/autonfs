@@ -1,5 +1,7 @@
 # AutoNFS
 
+[中文版 (Chinese Version)](README_zh-TW.md)
+
 > **Intelligent On-Demand NFS Mount Manager** for Home Labs & Energy Saving.
 > Wake-on-LAN on Access. Auto-Shutdown on Idle. Zero Configuration.
 
@@ -30,10 +32,14 @@
 
 ### 1. Installation
 
+#### Option A: Download Binary (Recommended)
+Download the latest version (`v0.0.1+`) for your platform from [GitHub Releases](https://github.com/archroiko/autonfs/releases).
+
+#### Option B: Build from Source
 Requires Go 1.20+:
 
 ```bash
-go build -o autonfs ./cmd/autonfs
+go build -ldflags="-s -w" -o autonfs ./cmd/autonfs
 ```
 
 ### 2. Configuration (`autonfs.yaml`)
@@ -45,9 +51,11 @@ hosts:
   - alias: "my-nas"   # SSH Configuration Alias
     idle_timeout: "30m"       # Shutdown after 30m inactivity
     wake_timeout: "120s"      # Wait max 120s for boot
+    shutdown_cmd: "systemctl poweroff" # Custom shutdown command (Optional)
     mounts:
       - local: "/mnt/archive"
         remote: "/volume1/archive"
+        mount_options: "rw,soft,timeo=100" # Custom mount options (Optional)
 ```
 
 ### 3. Deploy
@@ -71,6 +79,13 @@ To remove all configurations and services:
 
 ```bash
 ./autonfs undeploy --local-dir /mnt/archive --remote my-nas
+```
+
+### 5. Check Version
+
+```bash
+./autonfs version
+# Output: AutoNFS v0.0.1 (b7c96f1)
 ```
 
 ---
