@@ -1,7 +1,7 @@
 .*
 !.gitignore
 
-autonfs
+/autonfs
 autonfs.yaml
 main
 tmp
