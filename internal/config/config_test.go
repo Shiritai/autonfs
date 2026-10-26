@@ -13,6 +13,7 @@ hosts:
     mounts:
       - local: "/mnt/data"
         remote: "/volume1/data"
+        mount_options: "rw,soft,timeo=100"
       - local: "/mnt/backup"
         remote: "/volume1/backup"
 `
@@ -38,6 +39,9 @@ hosts:
 	}
 	if host.Mounts[0].Local != "/mnt/data" {
 		t.Errorf("Mount 0 local mismatch")
+	}
+	if host.Mounts[0].Options != "rw,soft,timeo=100" {
+		t.Errorf("Expected mount_options 'rw,soft,timeo=100', got '%s'", host.Mounts[0].Options)
 	}
 }
 
@@ -70,6 +74,25 @@ hosts:
   - alias: nas
     idle_timeout: "invalid"
     mounts: [{local: /a, remote: /b}]
+`,
+			wantErr: true,
+		},
+		{
+			name: "unknown host key",
+			yaml: `
+hosts:
+  - alias: nas
+    idle_timout: "5m"
+    mounts: [{local: /a, remote: /b}]
+`,
+			wantErr: true,
+		},
+		{
+			name: "unknown mount key",
+			yaml: `
+hosts:
+  - alias: nas
+    mounts: [{local: /a, remote: /b, options: "rw"}]
 `,
 			wantErr: true,
 		},

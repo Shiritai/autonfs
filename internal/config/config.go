@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -23,15 +26,19 @@ type HostConfig struct {
 
 // MountConfig defines a single directory mapping
 type MountConfig struct {
-	Local   string `yaml:"local"`   // Local mount point
-	Remote  string `yaml:"remote"`  // Remote export path
-	Options string `yaml:"options"` // Mount options (e.g. "rw,soft,timeo=100")
+	Local   string `yaml:"local"`         // Local mount point
+	Remote  string `yaml:"remote"`        // Remote export path
+	Options string `yaml:"mount_options"` // Mount options (e.g. "rw,soft,timeo=100")
 }
 
-// ParseConfig parses YAML content into a Config struct
+// ParseConfig parses YAML content into a Config struct.
+// Unknown keys are rejected so that typos fail loudly instead of being dropped.
 func ParseConfig(data []byte) (*Config, error) {
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	// An empty document decodes to io.EOF; leave it to Validate to reject.
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("failed to parse config: %v", err)
 	}
 
