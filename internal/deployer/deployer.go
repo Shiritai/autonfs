@@ -224,14 +224,15 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		}
 
 		// Install Commands
-		// Conditional move? No, always move to overwrite.
+		// Always overwrite. Use install, not mv: the uploads are owned by the
+		// SSH user, and root must own what systemd loads and runs as root.
 		// Key is RESTART.
 		installCmds := []string{
-			"mv /tmp/autonfs /usr/local/bin/autonfs",
-			"chmod +x /usr/local/bin/autonfs",
-			"mv /tmp/autonfs-watcher.service /etc/systemd/system/autonfs-watcher.service",
-			"mkdir -p /etc/exports.d",
-			"mv /tmp/autonfs.exports /etc/exports.d/autonfs.exports",
+			"install -m 755 -o root -g root /tmp/autonfs /usr/local/bin/autonfs",
+			"install -m 644 -o root -g root /tmp/autonfs-watcher.service /etc/systemd/system/autonfs-watcher.service",
+			"install -d -m 755 /etc/exports.d",
+			"install -m 644 -o root -g root /tmp/autonfs.exports /etc/exports.d/autonfs.exports",
+			"rm -f /tmp/autonfs /tmp/autonfs-watcher.service /tmp/autonfs.exports",
 			"systemctl daemon-reload",
 			"systemctl enable --now autonfs-watcher.service", // Ensure enabled & started (self-healing)
 			"exportfs -ra",
@@ -400,7 +401,8 @@ func writeToRemoteTmp(c SSHClient, content []byte, remotePath string) error {
 	return c.UploadFile(tmpPath, remotePath)
 }
 
-// Helper: Write to local file (sudo)
+// Helper: Write to local file (sudo) as root:root 0644.
+// install, not mv: mv would keep the temp file's owner and 0600 mode.
 func localWrite(executor LocalExecutor, path string, content []byte) error {
 	tmpFile, err := os.CreateTemp("", "local_write_*")
 	if err != nil {
@@ -415,7 +417,7 @@ func localWrite(executor LocalExecutor, path string, content []byte) error {
 	}
 	tmpFile.Close()
 
-	if err := executor.RunCommand("sudo", "mv", tmpPath, path); err != nil {
+	if err := executor.RunCommand("sudo", "install", "-m", "644", "-o", "root", "-g", "root", tmpPath, path); err != nil {
 		return fmt.Errorf("failed to write local file (%s): %v", path, err)
 	}
 	return nil

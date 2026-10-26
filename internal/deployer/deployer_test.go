@@ -133,11 +133,11 @@ func (m *MockLocalExecutor) RunCommand(name string, args ...string) error {
 	}
 	m.Cmds = append(m.Cmds, cmdStr)
 
-	// Simulate mv for Idempotency Test
-	// Command: sudo mv tmpPath targetPath
-	if name == "sudo" && len(args) >= 3 && args[0] == "mv" {
-		src := args[1]
-		dst := args[2]
+	// Simulate install for Idempotency Test
+	// Command: sudo install <flags...> tmpPath targetPath
+	if name == "sudo" && len(args) >= 3 && args[0] == "install" {
+		src := args[len(args)-2]
+		dst := args[len(args)-1]
 		// Read src from real disk (since localWrite writes to disk)
 		content, err := ioutil.ReadFile(src)
 		if err == nil {
@@ -148,6 +148,19 @@ func (m *MockLocalExecutor) RunCommand(name string, args ...string) error {
 		}
 	}
 	return nil
+}
+
+// localInstall is the command prefix localWrite uses to place a unit file
+const localInstall = "sudo install -m 644 -o root -g root"
+
+func countCmds(cmds []string, substr string) int {
+	n := 0
+	for _, cmd := range cmds {
+		if strings.Contains(cmd, substr) {
+			n++
+		}
+	}
+	return n
 }
 
 func TestDeployer_Apply_MultiHost(t *testing.T) {
@@ -196,14 +209,42 @@ func TestDeployer_Apply_MultiHost(t *testing.T) {
 
 	// Verify Local Mounts: 2 hosts * 1 mount = 2 local sets
 	// Each set writes mount + automount + wake units = 6 writes
-	mvCount := 0
-	for _, cmd := range mockLocal.Cmds {
-		if strings.Contains(cmd, "mv") {
-			mvCount++
+	if n := countCmds(mockLocal.Cmds, localInstall); n != 6 {
+		t.Errorf("Expected 6 local installs (mount+automount+wake units), got %d. Cmds: %v", n, mockLocal.Cmds)
+	}
+}
+
+// Files must land root-owned with fixed modes: moving the deploying user's
+// 0600 temp files left units user-owned (writable by a non-root user, yet
+// loaded or executed by root) and unreadable to others.
+func TestDeployer_Apply_InstallsRootOwned(t *testing.T) {
+	mockClient := &MockSSHClient{DiscoveryInfo: "eth0|192.168.1.100|00:11:22:33:44:55"}
+	mockLocal := &MockLocalExecutor{}
+	d := NewDeployerWithDeps(mockClient, &MockBuilder{}, mockLocal)
+
+	cfg := &config.Config{
+		Hosts: []config.HostConfig{{Alias: "h1", Mounts: []config.MountConfig{{Local: "/l", Remote: "/r"}}}},
+	}
+	if err := d.Apply(cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	if n := countCmds(mockLocal.Cmds, "sudo mv"); n != 0 {
+		t.Errorf("Expected no local mv, got %d. Cmds: %v", n, mockLocal.Cmds)
+	}
+
+	remote := strings.Join(mockClient.Cmds, "\n")
+	for _, want := range []string{
+		"install -m 755 -o root -g root /tmp/autonfs /usr/local/bin/autonfs",
+		"install -m 644 -o root -g root /tmp/autonfs-watcher.service /etc/systemd/system/autonfs-watcher.service",
+		"install -m 644 -o root -g root /tmp/autonfs.exports /etc/exports.d/autonfs.exports",
+	} {
+		if !strings.Contains(remote, want) {
+			t.Errorf("Remote install missing %q. Got:\n%s", want, remote)
 		}
 	}
-	if mvCount != 6 {
-		t.Errorf("Expected 6 local mv operations (mount+automount+wake units), got %d. Cmds: %v", mvCount, mockLocal.Cmds)
+	if strings.Contains(remote, "mv /tmp/") {
+		t.Errorf("Expected no remote mv from /tmp. Got:\n%s", remote)
 	}
 }
 
@@ -303,25 +344,16 @@ func TestDeployer_Apply_Idempotent(t *testing.T) {
 		// Simulate files already exist with same content?
 		// Hard to predict generated content exactly without rendering.
 		// Strategy:
-		// 1. Run Apply once (First run). Capture "mv" calls.
+		// 1. Run Apply once (First run). Capture "install" calls.
 		// 2. Populate MockLocalExecutor.Files with the written content.
 		// 3. Clear Cmds.
 		// 4. Run Apply again.
-		// 5. Expect 0 "mv" calls and 0 "restart" calls.
+		// 5. Expect 0 "install" calls and 0 "restart" calls.
 		Files: make(map[string][]byte),
 	}
-	// We need to capture writes. MockLocalExecutor doesn't capture content in 'mv' call easily unless we parse.
-	// But `localWrite` writes to temp file then mv.
-	// We mocked `ReadFile`.
-	// To support STEP 2, we need a way to "Store what was written".
-	// Since we can't easily intercept the temp file content from `mv cmd`,
-	// we will manually Pre-seed the Files with what we expect, OR
-	// modify MockLocalExecutor to intercept `mv temp target`?
-	// But temp file is real file on disk (created by ioutil.WriteFile).
-	// So MockLocalExecutor COULD read it!
-
-	// Better: Update MockLocalExecutor.RunCommand to handle "mv src dst":
-	// If command is mv, read src, write to m.Files[dst].
+	// localWrite stages content in a real temp file and then installs it, so
+	// MockLocalExecutor.RunCommand intercepts "install ... src dst", reads src
+	// and records it in m.Files[dst] (STEP 2).
 	d := NewDeployerWithDeps(mockClient, &MockBuilder{}, mockLocal)
 	cfg := &config.Config{
 		Hosts: []config.HostConfig{{Alias: "h1", Mounts: []config.MountConfig{{Local: "/idempotent", Remote: "/r"}}}},
@@ -333,13 +365,7 @@ func TestDeployer_Apply_Idempotent(t *testing.T) {
 	}
 
 	// Check we had writes
-	firstRunMv := 0
-	for _, cmd := range mockLocal.Cmds {
-		if strings.Contains(cmd, "mv") {
-			firstRunMv++
-		}
-	}
-	if firstRunMv == 0 {
+	if countCmds(mockLocal.Cmds, localInstall) == 0 {
 		t.Fatal("First run should have writes")
 	}
 
@@ -349,16 +375,9 @@ func TestDeployer_Apply_Idempotent(t *testing.T) {
 		t.Fatalf("Second Apply failed: %v", err)
 	}
 
-	// Expect NO mv calls (idempotent)
-	secondRunMv := 0
-	for _, cmd := range mockLocal.Cmds {
-		if strings.Contains(cmd, "mv") {
-			secondRunMv++
-		}
-	}
-
-	if secondRunMv != 0 {
-		t.Errorf("Expected 0 mv calls in second run, got %d. Cmds: %v", secondRunMv, mockLocal.Cmds)
+	// Expect NO writes (idempotent)
+	if n := countCmds(mockLocal.Cmds, localInstall); n != 0 {
+		t.Errorf("Expected 0 local installs in second run, got %d. Cmds: %v", n, mockLocal.Cmds)
 	}
 }
 
@@ -389,15 +408,9 @@ func TestDeployer_Apply_DryRun(t *testing.T) {
 		t.Errorf("Expected 0 Upload calls in DryRun, got %d: %v", len(mockClient.UploadCalls), mockClient.UploadCalls)
 	}
 
-	// 2. No Local Writes (mv)
-	mvCount := 0
-	for _, cmd := range mockLocal.Cmds {
-		if strings.Contains(cmd, "mv") {
-			mvCount++
-		}
-	}
-	if mvCount > 0 {
-		t.Errorf("Expected 0 local mv calls in DryRun, got %d: %v", mvCount, mockLocal.Cmds)
+	// 2. No Local Writes
+	if n := countCmds(mockLocal.Cmds, localInstall); n > 0 {
+		t.Errorf("Expected 0 local installs in DryRun, got %d: %v", n, mockLocal.Cmds)
 	}
 
 	// 3. No Systemd Restart/Enable
