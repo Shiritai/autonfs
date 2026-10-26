@@ -15,6 +15,10 @@ import (
 	"strings"
 )
 
+// binaryPath is where autonfs is installed on both client and server. Root
+// owns it because systemd runs it as root (server watcher, client wake).
+const binaryPath = "/usr/local/bin/autonfs"
+
 // Options Deployment Options
 type Options struct {
 	SSHAlias      string
@@ -186,7 +190,7 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		ServerIP:      info.IP,
 		ClientIP:      localIP,
 		MacAddr:       info.MAC,
-		BinaryPath:    "/usr/local/bin/autonfs",
+		BinaryPath:    binaryPath,
 		IdleTimeout:   idleTimeout,
 		WakeTimeout:   wakeTimeout,
 		LoadThreshold: "0.5", // Default? Add to YAML?
@@ -201,7 +205,7 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 	// 5. Upload & Install Server Components
 	// 5. Upload & Install Server Components
 	if opts.DryRun {
-		slog.Info("DRY-RUN: Upload binary", "path", "/usr/local/bin/autonfs")
+		slog.Info("DRY-RUN: Upload binary", "path", binaryPath)
 		slog.Info("DRY-RUN: Install service", "service", "autonfs-watcher.service")
 		slog.Info("DRY-RUN: Configure exports", "path", "/etc/exports.d/autonfs.exports")
 		slog.Info("DRY-RUN: Reload/Restart services")
@@ -228,7 +232,7 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		// SSH user, and root must own what systemd loads and runs as root.
 		// Key is RESTART.
 		installCmds := []string{
-			"install -m 755 -o root -g root /tmp/autonfs /usr/local/bin/autonfs",
+			"install -m 755 -o root -g root /tmp/autonfs " + binaryPath,
 			"install -m 644 -o root -g root /tmp/autonfs-watcher.service /etc/systemd/system/autonfs-watcher.service",
 			"install -d -m 755 /etc/exports.d",
 			"install -m 644 -o root -g root /tmp/autonfs.exports /etc/exports.d/autonfs.exports",
@@ -258,6 +262,9 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 
 	// 6. Local Setup (Client Side)
 	slog.Info("Deploying Local Units...")
+	if err := d.installLocalBinary(opts.DryRun); err != nil {
+		return err
+	}
 	anyHostChange := false
 
 	for _, m := range host.Mounts {
@@ -268,16 +275,12 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 			RemoteDir:    m.Remote,
 			LocalDir:     m.Local,
 			MacAddr:      info.MAC,
-			BinaryPath:   "/usr/local/bin/autonfs",
+			BinaryPath:   binaryPath,
 			IdleTimeout:  idleTimeout,
 			WakeTimeout:  wakeTimeout,
 			WakeUnit:     wakeUnit,
 			MountOptions: m.Options,
 		}
-
-		// Lookup executable logic
-		exe, _ := os.Executable()
-		mountTmplCfg.BinaryPath = exe
 
 		mountContent, _ := templates.Render("mount", templates.ClientMountTmpl, mountTmplCfg)
 		automountContent, _ := templates.Render("automount", templates.ClientAutomountTmpl, mountTmplCfg)
@@ -399,6 +402,26 @@ func writeToRemoteTmp(c SSHClient, content []byte, remotePath string) error {
 	tmpFile.Close()
 
 	return c.UploadFile(tmpPath, remotePath)
+}
+
+// installLocalBinary installs the running autonfs as the root-owned client
+// binary, since wake units execute it as root.
+func (d *Deployer) installLocalBinary(dryRun bool) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("cannot locate autonfs executable: %v", err)
+	}
+	if exe == binaryPath {
+		return nil // Already running the installed copy
+	}
+	if dryRun {
+		slog.Info("DRY-RUN: Install local binary", "src", exe, "path", binaryPath)
+		return nil
+	}
+	if err := d.localExec.RunCommand("sudo", "install", "-m", "755", "-o", "root", "-g", "root", exe, binaryPath); err != nil {
+		return fmt.Errorf("failed to install local binary: %v", err)
+	}
+	return nil
 }
 
 // Helper: Write to local file (sudo) as root:root 0644.

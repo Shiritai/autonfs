@@ -4,6 +4,7 @@ import (
 	"autonfs/internal/config"
 	"fmt"
 	"io/ioutil"
+	"os"
 	"strings"
 	"testing"
 )
@@ -233,6 +234,16 @@ func TestDeployer_Apply_InstallsRootOwned(t *testing.T) {
 		t.Errorf("Expected no local mv, got %d. Cmds: %v", n, mockLocal.Cmds)
 	}
 
+	// Wake units run the client binary as root, so it must not stay user-owned.
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBin := "sudo install -m 755 -o root -g root " + exe + " /usr/local/bin/autonfs"
+	if countCmds(mockLocal.Cmds, wantBin) != 1 {
+		t.Errorf("Expected local binary install %q. Cmds: %v", wantBin, mockLocal.Cmds)
+	}
+
 	remote := strings.Join(mockClient.Cmds, "\n")
 	for _, want := range []string{
 		"install -m 755 -o root -g root /tmp/autonfs /usr/local/bin/autonfs",
@@ -274,7 +285,7 @@ func TestDeployer_Apply_ClientUnits(t *testing.T) {
 	}{
 		{"mount", mount, "Requires=autonfs-wake-mnt-data.service"},
 		{"mount", mount, "After=autonfs-wake-mnt-data.service"},
-		{"wake", wake, `--mac "00:11:22:33:44:55" --ip "192.168.1.100" --port 2049 --timeout 180s`},
+		{"wake", wake, `ExecStart=/usr/local/bin/autonfs wake --mac "00:11:22:33:44:55" --ip "192.168.1.100" --port 2049 --timeout 180s`},
 		{"automount", automount, "TimeoutIdleSec=5m"},
 	}
 	for _, c := range checks {
@@ -408,8 +419,8 @@ func TestDeployer_Apply_DryRun(t *testing.T) {
 		t.Errorf("Expected 0 Upload calls in DryRun, got %d: %v", len(mockClient.UploadCalls), mockClient.UploadCalls)
 	}
 
-	// 2. No Local Writes
-	if n := countCmds(mockLocal.Cmds, localInstall); n > 0 {
+	// 2. No Local Writes (units or binary)
+	if n := countCmds(mockLocal.Cmds, "sudo install"); n > 0 {
 		t.Errorf("Expected 0 local installs in DryRun, got %d: %v", n, mockLocal.Cmds)
 	}
 
