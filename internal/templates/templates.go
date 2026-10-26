@@ -5,27 +5,46 @@ import (
 	"text/template"
 )
 
-// We define four core templates:
-// 1. Client Mount: Defines NFS mount parameters and Wake-on-LAN hook (ExecStartPre)
-// 2. Client Automount: Defines on-demand mount behavior
-// 3. Server Service: Defines the idle watcher service
-// 4. Server Exports: Defines NFS export configuration
+// We define five core templates:
+// 1. Client Mount: Defines NFS mount parameters; requires the Client Wake unit
+// 2. Client Wake: Sends Wake-on-LAN and waits for NFS before each mount
+// 3. Client Automount: Defines on-demand mount behavior
+// 4. Server Service: Defines the idle watcher service
+// 5. Server Exports: Defines NFS export configuration
 
+// systemd ignores Exec* keys in [Mount], so the wake step lives in its own
+// unit that the mount requires and is ordered after.
 const ClientMountTmpl = `[Unit]
 Description=AutoNFS Mount for {{.RemoteDir}}
-After=network.target
+Requires={{.WakeUnit}}
+After={{.WakeUnit}}
 
 [Mount]
 What={{.ServerIP}}:{{.RemoteDir}}
 Where={{.LocalDir}}
 Type=nfs
 Options={{.MountOptions}}
-# Critical: Wake up host before mount, set 10s timeout to avoid blocking indefinitely
-ExecStartPre={{.BinaryPath}} wake --mac "{{.MacAddr}}" --ip "{{.ServerIP}}" --port 2049 --timeout 10s
 `
 
 // Note: [Install] section removed from Mount unit to prevent enabling it directly.
 // It should only be activated by the Automount unit on demand.
+
+// RemainAfterExit keeps the wake "active" while its mount needs it, and
+// StopWhenUnneeded stops it once the mount goes away, so every new mount
+// (e.g. after an idle unmount and server shutdown) wakes the server again.
+// The wake command enforces --timeout itself, hence no start timeout here.
+const ClientWakeTmpl = `[Unit]
+Description=AutoNFS Wake for {{.ServerIP}} ({{.LocalDir}})
+Wants=network-online.target
+After=network-online.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=infinity
+ExecStart={{.BinaryPath}} wake --mac "{{.MacAddr}}" --ip "{{.ServerIP}}" --port 2049 --timeout {{.WakeTimeout}}
+`
 
 const ClientAutomountTmpl = `[Unit]
 Description=Automount for {{.LocalDir}}
@@ -72,6 +91,7 @@ type Config struct {
 	BinaryPath    string
 	IdleTimeout   string
 	WakeTimeout   string
+	WakeUnit      string // Unit name of the Client Wake service a mount requires
 	LoadThreshold string
 	WatcherDryRun bool
 	ShutdownCmd   string       // New field

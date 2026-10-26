@@ -171,24 +171,28 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 		})
 	}
 
+	// Host-level defaults, shared by the server watcher and client units
+	idleTimeout := host.IdleTimeout
+	if idleTimeout == "" {
+		idleTimeout = "5m"
+	}
+	wakeTimeout := host.WakeTimeout
+	if wakeTimeout == "" {
+		wakeTimeout = "120s"
+	}
+
 	// Use first mount for basic template vars if needed, or defaults
 	tmplCfg := templates.Config{
 		ServerIP:      info.IP,
 		ClientIP:      localIP,
 		MacAddr:       info.MAC,
 		BinaryPath:    "/usr/local/bin/autonfs",
-		IdleTimeout:   host.IdleTimeout,
-		WakeTimeout:   host.WakeTimeout,
+		IdleTimeout:   idleTimeout,
+		WakeTimeout:   wakeTimeout,
 		LoadThreshold: "0.5", // Default? Add to YAML?
 		Exports:       exports,
 		WatcherDryRun: opts.WatcherDryRun, // Pass Watcher Dry Run flag
 		ShutdownCmd:   host.ShutdownCmd,
-	}
-	if tmplCfg.IdleTimeout == "" {
-		tmplCfg.IdleTimeout = "5m"
-	} // Default
-	if tmplCfg.WakeTimeout == "" {
-		tmplCfg.WakeTimeout = "120s"
 	}
 
 	serviceContent, _ := templates.Render("service", templates.ServerServiceTmpl, tmplCfg)
@@ -257,13 +261,16 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 
 	for _, m := range host.Mounts {
 		unitName := escapeSystemdPath(m.Local)
+		wakeUnit := wakeUnitName(unitName)
 		mountTmplCfg := templates.Config{
 			ServerIP:     info.IP,
 			RemoteDir:    m.Remote,
 			LocalDir:     m.Local,
 			MacAddr:      info.MAC,
 			BinaryPath:   "/usr/local/bin/autonfs",
-			IdleTimeout:  host.IdleTimeout,
+			IdleTimeout:  idleTimeout,
+			WakeTimeout:  wakeTimeout,
+			WakeUnit:     wakeUnit,
 			MountOptions: m.Options,
 		}
 
@@ -273,37 +280,28 @@ func (d *Deployer) applyHost(host config.HostConfig, opts ApplyOptions) error {
 
 		mountContent, _ := templates.Render("mount", templates.ClientMountTmpl, mountTmplCfg)
 		automountContent, _ := templates.Render("automount", templates.ClientAutomountTmpl, mountTmplCfg)
+		wakeContent, _ := templates.Render("wake", templates.ClientWakeTmpl, mountTmplCfg)
 
-		mountFile := fmt.Sprintf("/etc/systemd/system/%s.mount", unitName)
-		automountFile := fmt.Sprintf("/etc/systemd/system/%s.automount", unitName)
-
-		unitChanged := false
-
-		// Check & Write Mount Unit
-		// Check & Write Mount Unit
-		if hasChange(d.localExec, mountFile, mountContent) {
-			slog.Info("Updating Mount Unit", "file", mountFile)
-			if opts.DryRun {
-				slog.Info("DRY-RUN: Write content", "file", mountFile)
-			} else {
-				if err := localWrite(d.localExec, mountFile, mountContent); err != nil {
-					return err
-				}
-			}
-			unitChanged = true
-			anyHostChange = true
+		units := []struct {
+			file    string
+			content []byte
+		}{
+			{fmt.Sprintf("/etc/systemd/system/%s.mount", unitName), mountContent},
+			{fmt.Sprintf("/etc/systemd/system/%s.automount", unitName), automountContent},
+			{fmt.Sprintf("/etc/systemd/system/%s", wakeUnit), wakeContent},
 		}
 
-		// Check & Write Automount Unit
-		// Check & Write Automount Unit
-		if hasChange(d.localExec, automountFile, automountContent) {
-			slog.Info("Updating Automount Unit", "file", automountFile)
+		// Check & Write each unit
+		unitChanged := false
+		for _, u := range units {
+			if !hasChange(d.localExec, u.file, u.content) {
+				continue
+			}
+			slog.Info("Updating Unit", "file", u.file)
 			if opts.DryRun {
-				slog.Info("DRY-RUN: Write content", "file", automountFile)
-			} else {
-				if err := localWrite(d.localExec, automountFile, automountContent); err != nil {
-					return err
-				}
+				slog.Info("DRY-RUN: Write content", "file", u.file)
+			} else if err := localWrite(d.localExec, u.file, u.content); err != nil {
+				return err
 			}
 			unitChanged = true
 			anyHostChange = true
@@ -485,6 +483,11 @@ func escapeSystemdPath(path string) string {
 	return sb.String()
 }
 
+// Helper: Name of the oneshot unit that wakes the server before a mount
+func wakeUnitName(mountUnitName string) string {
+	return fmt.Sprintf("autonfs-wake-%s.service", mountUnitName)
+}
+
 // RunUndeploy Execute undeploy, cleanup local and remote (optional)
 func RunUndeploy(opts Options) error {
 	// 0. Local Sudo Warmup
@@ -497,17 +500,21 @@ func RunUndeploy(opts Options) error {
 	unitName := escapeSystemdPath(opts.LocalDir)
 	automountUnit := fmt.Sprintf("%s.automount", unitName)
 	mountUnit := fmt.Sprintf("%s.mount", unitName)
+	wakeUnit := wakeUnitName(unitName)
 
 	exec.Command("sudo", "systemctl", "disable", "--now", automountUnit).Run()
 	exec.Command("sudo", "systemctl", "stop", mountUnit).Run()
 	exec.Command("sudo", "systemctl", "disable", mountUnit).Run()
+	exec.Command("sudo", "systemctl", "stop", wakeUnit).Run()
 
 	slog.Info("Removing unit files...")
 	mountFile := fmt.Sprintf("/etc/systemd/system/%s", mountUnit)
 	automountFile := fmt.Sprintf("/etc/systemd/system/%s", automountUnit)
+	wakeFile := fmt.Sprintf("/etc/systemd/system/%s", wakeUnit)
 
 	exec.Command("sudo", "rm", "-f", mountFile).Run()
 	exec.Command("sudo", "rm", "-f", automountFile).Run()
+	exec.Command("sudo", "rm", "-f", wakeFile).Run()
 
 	slog.Info("Reloading local systemd...")
 	exec.Command("sudo", "systemctl", "daemon-reload").Run()

@@ -195,19 +195,51 @@ func TestDeployer_Apply_MultiHost(t *testing.T) {
 	}
 
 	// Verify Local Mounts: 2 hosts * 1 mount = 2 local sets
-	// 2 mount files + 2 automount files = 4 writes
+	// Each set writes mount + automount + wake units = 6 writes
 	mvCount := 0
 	for _, cmd := range mockLocal.Cmds {
 		if strings.Contains(cmd, "mv") {
 			mvCount++
 		}
 	}
-	// Local writes use `mv`.
-	// Mount + Automount for Host1 = 2
-	// Mount + Automount for Host2 = 2
-	// Total 4.
-	if mvCount != 4 {
-		t.Errorf("Expected 4 local mv operations (mount+automount units), got %d. Cmds: %v", mvCount, mockLocal.Cmds)
+	if mvCount != 6 {
+		t.Errorf("Expected 6 local mv operations (mount+automount+wake units), got %d. Cmds: %v", mvCount, mockLocal.Cmds)
+	}
+}
+
+func TestDeployer_Apply_ClientUnits(t *testing.T) {
+	mockClient := &MockSSHClient{DiscoveryInfo: "eth0|192.168.1.100|00:11:22:33:44:55"}
+	mockLocal := &MockLocalExecutor{Files: make(map[string][]byte)}
+	d := NewDeployerWithDeps(mockClient, &MockBuilder{}, mockLocal)
+
+	// idle_timeout is left unset to check that host defaults reach client units.
+	cfg := &config.Config{
+		Hosts: []config.HostConfig{{
+			Alias:       "h1",
+			WakeTimeout: "180s",
+			Mounts:      []config.MountConfig{{Local: "/mnt/data", Remote: "/r"}},
+		}},
+	}
+	if err := d.Apply(cfg, ApplyOptions{}); err != nil {
+		t.Fatalf("Apply failed: %v", err)
+	}
+
+	mount := string(mockLocal.Files["/etc/systemd/system/mnt-data.mount"])
+	automount := string(mockLocal.Files["/etc/systemd/system/mnt-data.automount"])
+	wake := string(mockLocal.Files["/etc/systemd/system/autonfs-wake-mnt-data.service"])
+
+	checks := []struct {
+		unit, content, want string
+	}{
+		{"mount", mount, "Requires=autonfs-wake-mnt-data.service"},
+		{"mount", mount, "After=autonfs-wake-mnt-data.service"},
+		{"wake", wake, `--mac "00:11:22:33:44:55" --ip "192.168.1.100" --port 2049 --timeout 180s`},
+		{"automount", automount, "TimeoutIdleSec=5m"},
+	}
+	for _, c := range checks {
+		if !strings.Contains(c.content, c.want) {
+			t.Errorf("%s unit missing %q. Got:\n%s", c.unit, c.want, c.content)
+		}
 	}
 }
 
